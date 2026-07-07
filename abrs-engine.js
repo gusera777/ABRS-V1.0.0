@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *  ABRS V1.0 - Adaptive Breakout Recovery System
+ *  ABRS V1.3 - Adaptive Breakout Recovery System
  *  Core Trading Logic Engine untuk GUSERA SATS
  * ============================================================
  *
@@ -9,18 +9,46 @@
  *  eksekusi order nyata ke broker manapun. Semua "posisi" adalah
  *  representasi virtual yang dihitung dari price feed (mis. dari
  *  Twelve Data API) dan bisa dipakai untuk:
- *    - menghasilkan sinyal ENTRY/LOCK/RECOVERY/CLOSE
+ *    - menghasilkan sinyal ENTRY/HEDGE/CLOSE
  *    - mencatat riwayat cycle untuk analisis / self-learning
  *    - ditampilkan di UI (status basket, TQI, target, dsb)
  *
+ *  ------------------------------------------------------------
+ *  RULE ENTRY (v1.3 - diperbaiki):
+ *  ------------------------------------------------------------
+ *  1. Entry pertama dibuka LANGSUNG (market, bukan pending
+ *     BUY_STOP/SELL_STOP menunggu breakout range) begitu cycle
+ *     dimulai. Arah (BUY/SELL) ditentukan oleh arah trend jangka
+ *     pendek (SMA cepat vs SMA lambat dari candle terbaru).
+ *     Lot = lotStart (default 0.01).
+ *
+ *     Contoh: entry pertama BUY 0.01.
+ *
+ *  2. Jika harga bergerak MELAWAN posisi pertama (turun untuk
+ *     BUY, naik untuk SELL), sistem langsung membuka posisi
+ *     HEDGE di sisi berlawanan dengan lot tetap = hedgeLotSize
+ *     (default 0.03). Hedge ini hanya terjadi SEKALI per cycle.
+ *
+ *     Contoh: BUY 0.01 floating rugi -> open SELL 0.03.
+ *     Sebaliknya: SELL 0.01 floating rugi (harga naik) -> open BUY 0.03.
+ *
+ *  3. Seluruh basket (semua posisi berjalan) ditutup (Close All)
+ *     begitu total floating profit basket >= target profit tetap
+ *     dalam $ (basketTargetUsd, default $10).
+ *
+ *  4. Proteksi risiko tetap berjalan sebagai jaring pengaman:
+ *     Stop Loss bertingkat (basketStopLossPct x globalRiskBudget)
+ *     dan EMERGENCY (100% globalRiskBudget) tetap menutup basket
+ *     lebih awal jika harga terus melawan kedua posisi.
+ *
  *  Alur pemakaian singkat:
  *    const engine = new ABRSEngine({ capital: 10000 });
- *    engine.startCycle(tqiComponents, candles, atr);
+ *    engine.startCycle(tqiComponents, candles, atr, currentPrice);
  *    // untuk setiap tick / candle baru:
  *    engine.onPriceTick(currentPrice);
  *    // setelah basket close, mulai cycle baru:
  *    engine.startNewCycleAfterClose();
- *    engine.startCycle(nextTqiComponents, nextCandles, nextAtr);
+ *    engine.startCycle(nextTqiComponents, nextCandles, nextAtr, nextPrice);
  * ============================================================
  */
 
@@ -28,16 +56,17 @@ class ABRSEngine {
   constructor(config = {}) {
     this.config = {
       capital: config.capital ?? 10000,
-      globalRiskPct: config.globalRiskPct ?? 0.15,      // 15% dari modal (default lebih konservatif dari versi awal 50%)
-      recoveryBudgetSplit: config.recoveryBudgetSplit ?? 0.35, // porsi recovery dari global risk
+      globalRiskPct: config.globalRiskPct ?? 0.15,      // 15% dari modal
+      recoveryBudgetSplit: config.recoveryBudgetSplit ?? 0.35, // porsi budget hedge dari global risk (info/limit)
       basketStopLossPct: config.basketStopLossPct ?? 0.6, // cycle ditutup 'LOSS' saat basketProfit <= -(globalRiskBudget * pct), sebelum menyentuh EMERGENCY penuh
-      lotStart: config.lotStart ?? 0.01,
-      lotStep: config.lotStep ?? 0.01,
-      lotMax: config.lotMax ?? 0.20,
-      rangeLookback: config.rangeLookback ?? 20,
-      atrMinRangeMultiplier: config.atrMinRangeMultiplier ?? 1.5, // lebar range minimum = ATR x multiplier
-      atrOffsetMultiplier: config.atrOffsetMultiplier ?? 0.25,   // offset pending order dari S/R
-      // Bobot komponen penyusun TQI (total idealnya = 1)
+      lotStart: config.lotStart ?? 0.01,       // lot entry pertama
+      hedgeLotSize: config.hedgeLotSize ?? 0.03, // lot tetap untuk hedge lawan arah
+      lotMax: config.lotMax ?? 0.20,           // batas aman lot (hedge tidak boleh melebihi ini)
+      basketTargetUsd: config.basketTargetUsd ?? 10, // target profit tetap ($) untuk Close All
+      trendFastPeriod: config.trendFastPeriod ?? 10,  // SMA cepat untuk deteksi arah entry pertama
+      trendSlowPeriod: config.trendSlowPeriod ?? 30,  // SMA lambat untuk deteksi arah entry pertama
+      // Bobot komponen penyusun TQI (total idealnya = 1) - dipakai untuk info/analisa,
+      // tidak lagi menggerbang entry (entry selalu terjadi begitu cycle dimulai).
       tqiWeights: config.tqiWeights ?? {
         trendStrength: 0.25,
         marketStructure: 0.20,
@@ -53,7 +82,7 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // 16. CYCLE RESET
+  // CYCLE RESET
   // ------------------------------------------------------------
   resetCycle(equityStart = this.config.capital) {
     this.cycle = {
@@ -65,24 +94,26 @@ class ABRSEngine {
       equityStart,
       equityEnd: null,
       tqiStart: null,
-      marketMode: null,      // 'RANGE' | 'TREND'
-      basketTarget: null,
+      marketMode: null,      // 'RANGE' | 'TREND' (info)
+      initialSide: null,     // 'BUY' | 'SELL' - arah entry pertama
+      basketTarget: null,    // target profit tetap ($)
       basketProfit: 0,
       maxDrawdown: 0,
-      recoveryCount: 0,
+      recoveryCount: 0,      // jumlah hedge terpasang (0 atau 1)
       maxLotUsed: 0,
       result: null,          // 'WIN' | 'LOSS' | 'EMERGENCY'
-      status: 'IDLE'         // IDLE, RANGE_DETECTED, PENDING_DEPLOYED, BUY_ACTIVE, SELL_ACTIVE, CLOSED
+      status: 'IDLE'         // IDLE, BUY_ACTIVE, SELL_ACTIVE, CLOSED
     };
 
     this.positions = [];      // { id, side, lot, entryPrice, status, openTime, floatingPnl }
-    this.pendingOrders = [];  // { side, type, triggerPrice, lot }
+    this.pendingOrders = [];  // selalu kosong - dipertahankan untuk kompatibilitas UI lama
     this.events = [];
 
     this.globalRiskBudget = this.config.capital * this.config.globalRiskPct;
     this.recoveryBudget = this.globalRiskBudget * this.config.recoveryBudgetSplit;
     this.floatingBudget = this.globalRiskBudget - this.recoveryBudget;
     this.recoveryBudgetUsed = 0;
+    this.hedgePlaced = false;
     this.tradingDisabled = false;
   }
 
@@ -92,7 +123,7 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // 3. TREND QUALITY INDEX (TQI) - komposit 0-100
+  // TREND QUALITY INDEX (TQI) - komposit 0-100 (info/analisa)
   // ------------------------------------------------------------
   // components = { trendStrength, marketStructure, volatility,
   //                breakoutQuality, volume, spread, momentum } masing2 0-100
@@ -118,178 +149,86 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // 4. MARKET MODE
+  // MARKET MODE (info, tidak menggerbang entry)
   // ------------------------------------------------------------
   getMarketMode(tqi) {
     return tqi <= 30 ? 'RANGE' : 'TREND';
   }
 
   // ------------------------------------------------------------
-  // 5. RANGE DETECTION
+  // DETEKSI ARAH ENTRY PERTAMA (SMA cepat vs SMA lambat)
   // ------------------------------------------------------------
-  detectRange(candles, atr) {
-    const lookback = candles.slice(-this.config.rangeLookback);
-    if (lookback.length < this.config.rangeLookback) {
-      return { valid: false, reason: 'INSUFFICIENT_CANDLES' };
-    }
-
-    const resistance = Math.max(...lookback.map(c => c.high));
-    const support = Math.min(...lookback.map(c => c.low));
-    const rangeWidth = resistance - support;
-    const minWidth = atr * this.config.atrMinRangeMultiplier;
-
-    if (rangeWidth < minWidth) {
-      return { valid: false, reason: 'RANGE_TOO_NARROW', resistance, support, rangeWidth, minWidth };
-    }
-    return { valid: true, resistance, support, rangeWidth };
+  detectTrendDirection(candles) {
+    const closes = candles.map(c => c.close);
+    const fastN = Math.min(this.config.trendFastPeriod, closes.length);
+    const slowN = Math.min(this.config.trendSlowPeriod, closes.length);
+    const fast = closes.slice(-fastN).reduce((a, b) => a + b, 0) / fastN;
+    const slow = closes.slice(-slowN).reduce((a, b) => a + b, 0) / slowN;
+    return fast >= slow ? 'BUY' : 'SELL';
   }
 
   // ------------------------------------------------------------
-  // 6. PENDING ORDER ENGINE
+  // ENTRY ENGINE - membuka posisi (entry pertama maupun hedge)
   // ------------------------------------------------------------
-  deployPendingOrders(range, atr) {
-    const offset = atr * this.config.atrOffsetMultiplier;
-    const buyStopPrice = range.resistance + offset;
-    const sellStopPrice = range.support - offset;
-
-    this.pendingOrders = [
-      { side: 'BUY', type: 'BUY_STOP', triggerPrice: buyStopPrice, lot: this.config.lotStart },
-      { side: 'SELL', type: 'SELL_STOP', triggerPrice: sellStopPrice, lot: this.config.lotStart }
-    ];
-    this.cycle.status = 'PENDING_DEPLOYED';
-    this.logEvent({
-      type: 'PENDING', event: 'DEPLOY',
-      reason: `BUY_STOP@${buyStopPrice.toFixed(2)} SELL_STOP@${sellStopPrice.toFixed(2)}`
-    });
-    return this.pendingOrders;
+  openPosition(side, lot, price, reason) {
+    const position = {
+      id: `pos_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      side,
+      lot,
+      entryPrice: price,
+      status: 'ACTIVE',
+      openTime: Date.now(),
+      floatingPnl: 0
+    };
+    this.positions.push(position);
+    this.cycle.maxLotUsed = Math.max(this.cycle.maxLotUsed, lot);
+    this.logEvent({ orderId: position.id, type: side, lot, price, event: 'ENTRY', reason });
+    return position;
   }
 
   // ------------------------------------------------------------
-  // 7. LOT LADDER (linear, bukan martingale eksponensial)
+  // HEDGE RULE
   // ------------------------------------------------------------
-  nextLadderLot(currentLot) {
-    const next = Math.round((currentLot + this.config.lotStep) * 100) / 100;
-    return Math.min(next, this.config.lotMax);
+  // Begitu harga bergerak melawan posisi pertama, langsung buka
+  // posisi lawan arah dengan lot tetap (hedgeLotSize). Hanya
+  // terjadi sekali per cycle.
+  checkHedgeTrigger(price) {
+    if (this.hedgePlaced || this.cycle.status === 'CLOSED' || !this.cycle.initialSide) return null;
+
+    const initialSide = this.cycle.initialSide;
+    const initialPositions = this.positions.filter(p => p.side === initialSide && p.status !== 'CLOSED');
+    if (!initialPositions.length) return null;
+
+    const refEntry = initialPositions[0].entryPrice;
+    const isAdverse = initialSide === 'BUY' ? price < refEntry : price > refEntry;
+    if (!isAdverse) return null;
+
+    const hedgeSide = initialSide === 'BUY' ? 'SELL' : 'BUY';
+    const hedgeLot = Math.min(this.config.hedgeLotSize, this.config.lotMax);
+
+    const hedgePosition = this.openPosition(hedgeSide, hedgeLot, price, 'HEDGE_ADVERSE_MOVE');
+    this.hedgePlaced = true;
+    this.cycle.recoveryCount += 1;
+    this.recoveryBudgetUsed += hedgeLot; // proxy sederhana; bisa diganti margin riil
+
+    this.logEvent({ orderId: hedgePosition.id, type: hedgeSide, lot: hedgeLot, price, event: 'HEDGE', reason: 'PRICE_MOVED_AGAINST_INITIAL_ENTRY' });
+    return hedgePosition;
   }
 
   // ------------------------------------------------------------
-  // 8/9. BREAKOUT & FALSE BREAKOUT RULE
+  // TICK HANDLER - dipanggil setiap ada harga baru
   // ------------------------------------------------------------
   onPriceTick(price) {
     if (this.tradingDisabled) return;
 
-    // Cek trigger pending order
-    for (const po of [...this.pendingOrders]) {
-      const triggered =
-        (po.type === 'BUY_STOP' && price >= po.triggerPrice) ||
-        (po.type === 'SELL_STOP' && price <= po.triggerPrice);
-      if (triggered) this.triggerOrder(po, price);
-    }
-
+    this.checkHedgeTrigger(price);
     this.updateFloating(price);
-    this.runRecoveryCheck(price);
     this.checkGlobalRisk();
     this.checkBasketTarget();
   }
 
-  triggerOrder(po, price) {
-    const opposite = po.side === 'BUY' ? 'SELL' : 'BUY';
-    const oppositeActive = this.positions.filter(p => p.side === opposite && p.status === 'ACTIVE');
-
-    // Rule 9: posisi sisi berlawanan yang masih ACTIVE menjadi LOCKED,
-    // tidak boleh ditutup kecuali oleh Basket Engine.
-    for (const p of oppositeActive) {
-      p.status = 'LOCKED';
-      this.logEvent({
-        orderId: p.id, type: p.side, lot: p.lot, price,
-        event: 'LOCK', reason: 'FALSE_BREAKOUT_OPPOSITE_TRIGGERED'
-      });
-    }
-
-    const newPosition = {
-      id: `pos_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      side: po.side,
-      lot: po.lot,
-      entryPrice: price,
-      status: 'ACTIVE',
-      openTime: Date.now(),
-      floatingPnl: 0
-    };
-    this.positions.push(newPosition);
-    this.cycle.status = po.side === 'BUY' ? 'BUY_ACTIVE' : 'SELL_ACTIVE';
-    this.cycle.maxLotUsed = Math.max(this.cycle.maxLotUsed, po.lot);
-
-    this.logEvent({
-      orderId: newPosition.id, type: po.type, lot: po.lot, price,
-      event: 'ENTRY', reason: 'BREAKOUT_TRIGGERED'
-    });
-
-    this.pendingOrders = this.pendingOrders.filter(o => o !== po);
-  }
-
   // ------------------------------------------------------------
-  // 10. RECOVERY ENGINE
-  // ------------------------------------------------------------
-  // Dipanggil otomatis dari onPriceTick untuk setiap sisi yang
-  // memiliki posisi LOCKED dan sedang floating loss.
-  runRecoveryCheck(price) {
-    const lockedSides = new Set(
-      this.positions.filter(p => p.status === 'LOCKED').map(p => p.side)
-    );
-
-    for (const side of lockedSides) {
-      const sideFloating = this.positions
-        .filter(p => p.side === side && p.status !== 'CLOSED')
-        .reduce((sum, p) => sum + (p.floatingPnl || 0), 0);
-
-      if (sideFloating < 0) {
-        this.attemptRecovery(side, price, Math.abs(sideFloating));
-      }
-    }
-  }
-
-  attemptRecovery(side, price, floatingLossOnSide) {
-    if (this.recoveryBudgetUsed >= this.recoveryBudget) {
-      this.logEvent({ type: side, event: 'RECOVERY_SKIPPED', reason: 'RECOVERY_BUDGET_EXHAUSTED', price });
-      return null;
-    }
-    if (floatingLossOnSide >= this.floatingBudget) {
-      this.logEvent({ type: side, event: 'RECOVERY_SKIPPED', reason: 'FLOATING_LOSS_LIMIT', price });
-      return null;
-    }
-
-    const sidePositions = this.positions.filter(p => p.side === side);
-    const lastLot = sidePositions.length ? sidePositions[sidePositions.length - 1].lot : this.config.lotStart;
-
-    if (lastLot >= this.config.lotMax) {
-      this.logEvent({ type: side, event: 'RECOVERY_STOPPED', reason: 'LOT_MAX_REACHED', price });
-      return null;
-    }
-
-    const nextLot = this.nextLadderLot(lastLot);
-    const recoveryPosition = {
-      id: `pos_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      side,
-      lot: nextLot,
-      entryPrice: price,
-      status: 'ACTIVE',
-      openTime: Date.now(),
-      floatingPnl: 0
-    };
-    this.positions.push(recoveryPosition);
-    this.cycle.recoveryCount += 1;
-    this.cycle.maxLotUsed = Math.max(this.cycle.maxLotUsed, nextLot);
-    this.recoveryBudgetUsed += nextLot; // proxy sederhana; bisa diganti margin riil
-
-    this.logEvent({
-      orderId: recoveryPosition.id, type: side, lot: nextLot, price,
-      event: 'RECOVERY', reason: 'LADDER_STEP'
-    });
-    return recoveryPosition;
-  }
-
-  // ------------------------------------------------------------
-  // 11. BASKET ENGINE
+  // BASKET ENGINE
   // ------------------------------------------------------------
   updateFloating(currentPrice, pipValue = 1, swap = 0, commission = 0) {
     let buyFloating = 0;
@@ -309,17 +248,8 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // 12/13. BASKET TARGET & CLOSE RULE
+  // BASKET TARGET & CLOSE RULE - Close All saat profit >= target tetap ($)
   // ------------------------------------------------------------
-  getBasketTargetPct(tqi) {
-    if (tqi <= 30) return 0.03;
-    if (tqi <= 60) return 0.05;
-    if (tqi <= 80) return 0.10;
-    // 81-100 -> band 20-30%, diskalakan linear terhadap posisi TQI dalam band
-    const t = (tqi - 81) / (100 - 81);
-    return 0.20 + t * 0.10;
-  }
-
   checkBasketTarget() {
     if (this.cycle.basketTarget == null || this.cycle.status === 'CLOSED') return;
     if (this.cycle.basketProfit >= this.cycle.basketTarget) {
@@ -344,7 +274,7 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // 14. GLOBAL RISK ENGINE
+  // GLOBAL RISK ENGINE (jaring pengaman, tetap berjalan)
   // ------------------------------------------------------------
   // Dua jenjang proteksi:
   //  a) STOP LOSS bertingkat di basketStopLossPct x globalRiskBudget -> cycle
@@ -368,39 +298,43 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // BOOTSTRAP CYCLE (Market Analysis -> Range -> Pending Deploy)
+  // BOOTSTRAP CYCLE - entry pertama langsung (market), tanpa
+  // menunggu breakout range.
   // ------------------------------------------------------------
-  startCycle(tqiComponents, candles, atr) {
+  startCycle(tqiComponents, candles, atr, currentPrice) {
     if (this.tradingDisabled) {
       return { started: false, reason: 'TRADING_DISABLED' };
+    }
+    if (currentPrice == null || !Number.isFinite(currentPrice)) {
+      return { started: false, reason: 'NO_PRICE' };
+    }
+    if (!candles || candles.length < 2) {
+      return { started: false, reason: 'INSUFFICIENT_CANDLES' };
     }
 
     const tqi = this.computeTQI(tqiComponents);
     this.cycle.tqiStart = tqi;
     this.cycle.marketMode = this.getMarketMode(tqi);
-    this.cycle.basketTarget = this.cycle.equityStart * this.getBasketTargetPct(tqi);
+    this.cycle.basketTarget = this.config.basketTargetUsd;
 
-    const range = this.detectRange(candles, atr);
-    if (!range.valid) {
-      this.logEvent({ event: 'RANGE_INVALID', reason: range.reason });
-      return { started: false, reason: range.reason };
-    }
+    const direction = this.detectTrendDirection(candles);
+    this.cycle.initialSide = direction;
+    this.cycle.status = direction === 'BUY' ? 'BUY_ACTIVE' : 'SELL_ACTIVE';
 
-    this.cycle.status = 'RANGE_DETECTED';
-    this.deployPendingOrders(range, atr);
+    this.openPosition(direction, this.config.lotStart, currentPrice, 'INITIAL_ENTRY');
 
     return {
       started: true,
       tqi,
       classification: this.classifyTQI(tqi),
       mode: this.cycle.marketMode,
-      range,
+      direction,
       basketTarget: this.cycle.basketTarget
     };
   }
 
   // ------------------------------------------------------------
-  // 17. LOGGING / EXPORT (untuk tabel trading_cycle & trade_event)
+  // LOGGING / EXPORT (untuk tabel trading_cycle & trade_event)
   // ------------------------------------------------------------
   logEvent(evt) {
     this.events.push({ cycleId: this.cycle.cycleId, timestamp: Date.now(), ...evt });

@@ -168,7 +168,7 @@
       <div class="learning-band-row"><span>Global Risk</span><span></span><span id="rsGlobalRisk" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Recovery Budget</span><span></span><span id="rsRecoveryBudget" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Floating Budget</span><span></span><span id="rsFloatingBudget" style="text-align:right">—</span></div>
-      <div class="learning-band-row"><span>Lot Start / Max</span><span></span><span id="rsLot" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Lot Awal / Hedge / Maks</span><span></span><span id="rsLot" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Spread (pip)</span><span></span><span id="rsSpread" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Komisi / lot</span><span></span><span id="rsCommission" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Pip Value</span><span></span><span id="rsPipValue" style="text-align:right">—</span></div>
@@ -292,20 +292,23 @@
             <span class="field-hint">Cycle ditutup 'LOSS' lebih awal di level ini, sebelum menyentuh 100% Global Risk (EMERGENCY).</span>
           </div>
           <div class="field">
-            <label>Lot Awal</label>
+            <label>Lot Entry Pertama</label>
             <input type="number" id="cfgLotStart" step="0.01" min="0.01">
+            <span class="field-hint">Lot untuk entry pertama (BUY atau SELL, tergantung arah trend).</span>
           </div>
           <div class="field">
-            <label>Lot Step (kenaikan ladder)</label>
-            <input type="number" id="cfgLotStep" step="0.01" min="0.01">
+            <label>Lot Hedge (lawan arah)</label>
+            <input type="number" id="cfgHedgeLot" step="0.01" min="0.01">
+            <span class="field-hint">Lot tetap yang dibuka di sisi berlawanan begitu harga bergerak melawan entry pertama.</span>
           </div>
           <div class="field">
-            <label>Lot Maksimum</label>
+            <label>Lot Maksimum (batas aman)</label>
             <input type="number" id="cfgLotMax" step="0.01" min="0.01">
           </div>
           <div class="field">
-            <label>Range Lookback (candle)</label>
-            <input type="number" id="cfgRangeLookback" step="1" min="5">
+            <label>Target Profit Basket ($)</label>
+            <input type="number" id="cfgTargetProfit" step="0.01" min="0.01">
+            <span class="field-hint">Semua posisi ditutup (Close All) begitu total profit basket mencapai nilai ini.</span>
           </div>
         </div>
       </div>

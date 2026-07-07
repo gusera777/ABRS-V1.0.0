@@ -27,6 +27,17 @@ python3 -m http.server 8080
 | `style.css` | Desain "ledger/block" — tiap trading cycle divisualisasikan seperti blok dengan hash-id & rantai riwayat. |
 | `index.html` | Struktur halaman. |
 
+## Rule Entry (v1.3 — diperbaiki)
+
+Entry ABRS sekarang bekerja langsung (market), tanpa menunggu breakout range:
+
+1. **Entry pertama**: begitu cycle dimulai, sistem langsung buka posisi dengan lot **0.01** — arahnya (BUY/SELL) mengikuti trend jangka pendek (SMA cepat vs SMA lambat dari candle terbaru).
+2. **Hedge lawan arah**: jika harga kemudian bergerak melawan posisi pertama (turun untuk BUY, naik untuk SELL), sistem langsung membuka posisi lawan arah dengan lot tetap **0.03** (satu kali per cycle). Contoh: BUY 0.01 lalu harga turun → open SELL 0.03. Sebaliknya: SELL 0.01 lalu harga naik → open BUY 0.03.
+3. **Close All**: begitu total floating profit basket (BUY+SELL) mencapai target profit tetap (**default $10**, bisa diubah di Pengaturan → "Target Profit Basket"), seluruh posisi ditutup sekaligus.
+4. **Jaring pengaman**: Stop Loss bertingkat & EMERGENCY (Global Risk) tetap berjalan seperti sebelumnya, untuk membatasi kerugian jika harga terus bergerak melawan basket setelah hedge terpasang.
+
+Lot hedge (0.03) dan target profit ($10) bisa disesuaikan di modal Pengaturan (`hedgeLotSize`, `basketTargetUsd` di `abrs-engine.js` / `app.js`).
+
 ## Perubahan di Versi Ini (Evaluasi & Perbaikan)
 
 - **Grafik harga + marker Entry** (`priceChart` canvas di `app.js`/`index.html`): candle, garis Resistance/Support, level Pending Order, dan segitiga Entry (hijau=BUY, merah=SELL, outline abu=LOCKED) — murni canvas 2D, tanpa library luar.

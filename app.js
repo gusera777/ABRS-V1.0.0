@@ -25,9 +25,9 @@ const DEFAULT_SETTINGS = {
   recoveryBudgetSplit: 0.35,
   basketStopLossPct: 0.6,
   lotStart: 0.01,
-  lotStep: 0.01,
+  hedgeLotSize: 0.03,
   lotMax: 0.20,
-  rangeLookback: 20,
+  basketTargetUsd: 10,
   spreadPips: 2,
   commissionPerLot: 3.5,
   swapPerTick: 0,
@@ -104,9 +104,9 @@ function buildEngineConfig(s) {
     recoveryBudgetSplit: s.recoveryBudgetSplit,
     basketStopLossPct: s.basketStopLossPct,
     lotStart: s.lotStart,
-    lotStep: s.lotStep,
+    hedgeLotSize: s.hedgeLotSize,
     lotMax: s.lotMax,
-    rangeLookback: s.rangeLookback,
+    basketTargetUsd: s.basketTargetUsd,
     tqiWeights: s.tqiWeights
   };
 }
@@ -212,14 +212,16 @@ async function refreshCandlesAndMaybeStartCycle() {
     if (engine.cycle.status === 'IDLE' || engine.cycle.status === 'CLOSED') {
       if (engine.cycle.status === 'CLOSED') engine.startNewCycleAfterClose();
       costsAccum = 0;
-      const result = engine.startCycle(lastTqiComponents, lastCandles, lastAtr);
+      lastRange = null;
+      const entryPrice = candles.at(-1).close;
+      const positionsBeforeEntry = [...engine.positions];
+      const result = engine.startCycle(lastTqiComponents, lastCandles, lastAtr, entryPrice);
+      applyEntryCosts(positionsBeforeEntry);
       pullEventsToLog();
       if (!result.started) {
-        setFeedStatus('paused', `MENUNGGU RANGE (${result.reason})`);
-        lastRange = null;
+        setFeedStatus('paused', `MENUNGGU DATA (${result.reason})`);
       } else {
         setFeedStatus('live', 'FEED LIVE');
-        lastRange = result.range;
       }
     }
     renderAll();
@@ -251,23 +253,14 @@ async function pollQuoteTick() {
 function handleTick(price) {
   if (engine.tradingDisabled) return;
 
-  const positionsBeforeEntry = [...engine.positions];
-  for (const po of [...engine.pendingOrders]) {
-    const triggered =
-      (po.type === 'BUY_STOP' && price >= po.triggerPrice) ||
-      (po.type === 'SELL_STOP' && price <= po.triggerPrice);
-    if (triggered) engine.triggerOrder(po, price);
-  }
-  applyEntryCosts(positionsBeforeEntry);
+  const positionsBeforeHedge = [...engine.positions];
+  engine.checkHedgeTrigger(price);
+  applyEntryCosts(positionsBeforeHedge);
 
   const openCount = engine.positions.filter(p => p.status !== 'CLOSED').length;
   const swapTotal = openCount * settings.swapPerTick;
 
   engine.updateFloating(price, settings.pipValue, swapTotal, costsAccum);
-
-  const positionsBeforeRecovery = [...engine.positions];
-  engine.runRecoveryCheck(price);
-  applyEntryCosts(positionsBeforeRecovery);
 
   engine.checkGlobalRisk();
   engine.checkBasketTarget();
@@ -589,7 +582,7 @@ function renderRiskSummary() {
   el.rsGlobalRisk.textContent = `${fmtMoney(engine.globalRiskBudget)} (${(settings.globalRiskPct * 100).toFixed(0)}%)`;
   el.rsRecoveryBudget.textContent = fmtMoney(engine.recoveryBudget);
   el.rsFloatingBudget.textContent = fmtMoney(engine.floatingBudget);
-  el.rsLot.textContent = `${settings.lotStart.toFixed(2)} / ${settings.lotMax.toFixed(2)}`;
+  el.rsLot.textContent = `${settings.lotStart.toFixed(2)} awal / ${settings.hedgeLotSize.toFixed(2)} hedge / ${settings.lotMax.toFixed(2)} maks`;
   el.rsSpread.textContent = `${settings.spreadPips} pip`;
   el.rsCommission.textContent = fmtMoney(settings.commissionPerLot) + '/lot';
   el.rsPipValue.textContent = fmtMoney(settings.pipValue);
@@ -776,9 +769,9 @@ function openSettings() {
   $('cfgRecoverySplit').value = settings.recoveryBudgetSplit;
   $('cfgStopLoss').value = settings.basketStopLossPct;
   $('cfgLotStart').value = settings.lotStart;
-  $('cfgLotStep').value = settings.lotStep;
+  $('cfgHedgeLot').value = settings.hedgeLotSize;
   $('cfgLotMax').value = settings.lotMax;
-  $('cfgRangeLookback').value = settings.rangeLookback;
+  $('cfgTargetProfit').value = settings.basketTargetUsd;
   $('cfgSpread').value = settings.spreadPips;
   $('cfgCommission').value = settings.commissionPerLot;
   $('cfgSwap').value = settings.swapPerTick;
@@ -813,9 +806,9 @@ el.settingsForm.addEventListener('submit', e => {
     recoveryBudgetSplit: parseFloat($('cfgRecoverySplit').value) || DEFAULT_SETTINGS.recoveryBudgetSplit,
     basketStopLossPct: parseFloat($('cfgStopLoss').value) || DEFAULT_SETTINGS.basketStopLossPct,
     lotStart: parseFloat($('cfgLotStart').value) || DEFAULT_SETTINGS.lotStart,
-    lotStep: parseFloat($('cfgLotStep').value) || DEFAULT_SETTINGS.lotStep,
+    hedgeLotSize: parseFloat($('cfgHedgeLot').value) || DEFAULT_SETTINGS.hedgeLotSize,
     lotMax: parseFloat($('cfgLotMax').value) || DEFAULT_SETTINGS.lotMax,
-    rangeLookback: parseInt($('cfgRangeLookback').value) || DEFAULT_SETTINGS.rangeLookback,
+    basketTargetUsd: parseFloat($('cfgTargetProfit').value) || DEFAULT_SETTINGS.basketTargetUsd,
     spreadPips: parseFloat($('cfgSpread').value) || 0,
     commissionPerLot: parseFloat($('cfgCommission').value) || 0,
     swapPerTick: parseFloat($('cfgSwap').value) || 0,
