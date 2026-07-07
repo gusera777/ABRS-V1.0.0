@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GUSERA SATS — ABRS Console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ===================== TOPBAR ===================== -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">₿</div>
+      <div class="brand-text">
+        <h1>GUSERA SATS <span style="color:var(--accent-sats)">·</span> ABRS</h1>
+        <p>ADAPTIVE BREAKOUT RECOVERY SYSTEM — SIGNAL ENGINE</p>
+      </div>
+    </div>
+    <div class="topbar-controls">
+      <div class="feed-status" id="feedStatus">
+        <span class="dot off" id="feedDot"></span>
+        <span id="feedLabel">FEED OFFLINE</span>
+      </div>
+      <select id="symbolSelect">
+        <option value="XAU/USD">XAU/USD</option>
+        <option value="BTC/USD">BTC/USD</option>
+        <option value="EUR/USD">EUR/USD</option>
+        <option value="GBP/USD">GBP/USD</option>
+        <option value="US30/USD">US30/USD</option>
+      </select>
+      <select id="intervalSelect">
+        <option value="1min">M1</option>
+        <option value="5min" selected>M5</option>
+        <option value="15min">M15</option>
+        <option value="1h">H1</option>
+      </select>
+      <label class="feed-status" style="cursor:pointer" title="Coba dashboard dengan data simulasi, tanpa API key">
+        <input type="checkbox" id="demoModeToggle" style="accent-color:var(--accent-sats)">
+        <span>Mode Demo</span>
+      </label>
+      <button class="btn" id="btnToggleFeed">Mulai Feed</button>
+      <button class="btn btn-icon" id="btnSettings" title="Pengaturan">⚙</button>
+    </div>
+  </div>
+
+  <!-- ===================== ROW 1: Basket status + TQI ===================== -->
+  <div class="grid">
+    <!-- BASKET STATUS CARD -->
+    <div class="card">
+      <div class="card-head">
+        <h2>📦 Status Basket <span class="badge" id="cycleStatusBadge">IDLE</span></h2>
+        <span class="block-id">CYCLE <b id="cycleIdShort">—</b></span>
+      </div>
+
+      <div class="basket-status-row">
+        <div class="basket-pnl" id="basketPnl">$0.00</div>
+        <span class="basket-sub" id="basketPnlPct">0.00% dari modal</span>
+      </div>
+      <div class="basket-sub" id="basketMeta">Mode pasar: — · Target: —</div>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="basketTargetFill" style="width:0%"></div>
+      </div>
+      <div class="progress-labels">
+        <span>Progress ke Target</span>
+        <span id="basketTargetLabel">0 / 0</span>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill risk" id="riskFill" style="width:0%"></div>
+      </div>
+      <div class="progress-labels">
+        <span>Global Risk Budget Terpakai</span>
+        <span id="riskLabel">0 / 0</span>
+      </div>
+
+      <div class="flex gap-8 mt-8" style="flex-wrap:wrap">
+        <span class="badge badge-info" id="recoveryBadge">Recovery: 0x</span>
+        <span class="badge badge-gold" id="maxLotBadge">Max Lot: 0.00</span>
+        <span class="badge" id="ddBadge">Max DD: $0.00</span>
+      </div>
+
+      <div class="eyebrow mt-8" style="margin-top:16px">RANTAI CYCLE TERAKHIR</div>
+      <div class="chain-row" id="chainRow">
+        <div class="chain-block active">•</div>
+      </div>
+    </div>
+
+    <!-- TQI GAUGE CARD -->
+    <div class="card">
+      <div class="card-head">
+        <h2>📈 Trend Quality Index (TQI)</h2>
+        <span class="badge badge-gold" id="tqiModeBadge">RANGE</span>
+      </div>
+      <div class="tqi-wrap">
+        <div class="tqi-gauge-holder">
+          <svg viewBox="0 0 168 100" width="168" height="100">
+            <path d="M 12 92 A 72 72 0 0 1 156 92" fill="none" stroke="#232830" stroke-width="14" stroke-linecap="round"/>
+            <path id="tqiArc" d="M 12 92 A 72 72 0 0 1 156 92" fill="none" stroke="var(--accent-sats)"
+                  stroke-width="14" stroke-linecap="round" stroke-dasharray="226 226" stroke-dashoffset="226"/>
+          </svg>
+          <div class="tqi-value" id="tqiValue">0</div>
+          <div class="tqi-class" id="tqiClass">SIDEWAYS</div>
+        </div>
+        <div class="tqi-components" id="tqiComponents"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== ROW 2: Performance stats ===================== -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-head">
+      <h2>📊 Statistik Performa</h2>
+      <span class="eyebrow">SEJAK MODAL AWAL DIATUR</span>
+    </div>
+    <div class="grid-3" style="margin-bottom:0" id="statGridTop"></div>
+    <div class="grid-3" style="margin-top:18px; margin-bottom:0" id="statGridBottom"></div>
+  </div>
+
+  <!-- ===================== ROW 3: Positions + Settings summary ===================== -->
+  <div class="grid">
+    <!-- ACTIVE POSITIONS -->
+    <div class="card">
+      <div class="card-head">
+        <h2>💹 Posisi Aktif</h2>
+        <span class="badge" id="positionsCountBadge">0 posisi</span>
+      </div>
+      <div id="positionsList">
+        <div class="empty-row-plain text-dim" style="text-align:center;padding:28px 0;font-size:12.5px">
+          Belum ada posisi terbuka. Menunggu breakout terpicu.
+        </div>
+      </div>
+
+      <div class="eyebrow" style="margin-top:16px">PENDING ORDER</div>
+      <div id="pendingList" style="margin-top:8px">
+        <div class="text-dim" style="font-size:12px">Belum ada pending order.</div>
+      </div>
+    </div>
+
+    <!-- RISK / MODAL SUMMARY -->
+    <div class="card">
+      <div class="card-head">
+        <h2>🛡 Ringkasan Risk & Modal</h2>
+        <button class="btn" id="btnSettings2" style="font-size:12px;padding:6px 12px">Ubah</button>
+      </div>
+      <div class="learning-band-row"><span>Modal Awal</span><span></span><span id="rsCapital" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Equity Cycle</span><span></span><span id="rsEquity" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Global Risk</span><span></span><span id="rsGlobalRisk" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Recovery Budget</span><span></span><span id="rsRecoveryBudget" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Floating Budget</span><span></span><span id="rsFloatingBudget" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Lot Start / Max</span><span></span><span id="rsLot" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Spread (pip)</span><span></span><span id="rsSpread" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Komisi / lot</span><span></span><span id="rsCommission" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Pip Value</span><span></span><span id="rsPipValue" style="text-align:right">—</span></div>
+    </div>
+  </div>
+
+  <!-- ===================== ROW 4: AI Self-Learning ===================== -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head">
+        <h2>🧠 AI Self-Learning</h2>
+        <span class="badge badge-gold">HEURISTIK ADAPTIF</span>
+      </div>
+      <div id="aiInsights">
+        <div class="ai-insight">
+          <div class="ai-insight-icon">i</div>
+          <div class="ai-insight-body">
+            <span class="ai-insight-tag">Menunggu data</span>
+            <p>Rekomendasi akan muncul setelah beberapa cycle selesai (minimal 5 cycle tercatat).</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>🎯 Win Rate per Band TQI</h2>
+        <span class="eyebrow">DARI RIWAYAT CYCLE</span>
+      </div>
+      <div id="tqiBandStats">
+        <div class="learning-band-row"><span>SIDEWAYS</span><div class="learning-band-track"><div class="learning-band-fill" style="width:0%"></div></div><span>—</span></div>
+        <div class="learning-band-row"><span>WEAK_TREND</span><div class="learning-band-track"><div class="learning-band-fill" style="width:0%"></div></div><span>—</span></div>
+        <div class="learning-band-row"><span>TRENDING</span><div class="learning-band-track"><div class="learning-band-fill" style="width:0%"></div></div><span>—</span></div>
+        <div class="learning-band-row"><span>STRONG_TREND</span><div class="learning-band-track"><div class="learning-band-fill" style="width:0%"></div></div><span>—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== ROW 5: Trade history + trade_event ===================== -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-head">
+      <h2>📜 Riwayat Trade (trading_cycle)</h2>
+      <span class="eyebrow" id="cycleHistCount">0 cycle tercatat</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Cycle ID</th><th>Mulai</th><th>Mode</th><th>TQI</th>
+            <th>Target</th><th>Hasil PnL</th><th>Max DD</th><th>Recovery</th><th>Hasil</th>
+          </tr>
+        </thead>
+        <tbody id="cycleHistBody">
+          <tr class="empty-row"><td colspan="9">Belum ada cycle yang selesai.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>🧾 Tabel trade_event (log mentah)</h2>
+      <div class="flex gap-8">
+        <span class="eyebrow" id="eventCount">0 event</span>
+        <button class="btn" id="btnExportEvents" style="font-size:11.5px;padding:6px 12px">Export JSON</button>
+      </div>
+    </div>
+    <div class="table-scroll" style="max-height:360px;overflow-y:auto">
+      <table>
+        <thead>
+          <tr><th>Waktu</th><th>Cycle</th><th>Order ID</th><th>Tipe</th><th>Event</th><th>Lot</th><th>Harga</th><th>Alasan</th></tr>
+        </thead>
+        <tbody id="eventBody">
+          <tr class="empty-row"><td colspan="8">Belum ada event tercatat.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer class="app-footer">GUSERA SATS — ABRS Console · Signal/simulation engine, bukan auto-executor broker.</footer>
+</div>
+
+<!-- ===================== SETTINGS MODAL ===================== -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>⚙ Pengaturan ABRS</h2>
+      <button class="btn btn-icon" id="btnCloseSettings">✕</button>
+    </div>
+
+    <form id="settingsForm">
+      <div class="form-section">
+        <h3>Modal &amp; Data Feed</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>Modal / Balance ($)</label>
+            <input type="number" id="cfgCapital" step="0.01" min="1" required>
+          </div>
+          <div class="field">
+            <label>Twelve Data API Key</label>
+            <input type="text" id="cfgApiKey" placeholder="apikey Twelve Data">
+            <span class="field-hint">Disimpan lokal di browser (localStorage), tidak dikirim kemanapun selain api.twelvedata.com.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>Manajemen Risiko</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>Global Risk (% dari modal)</label>
+            <input type="number" id="cfgGlobalRisk" step="0.01" min="0.01" max="1">
+          </div>
+          <div class="field">
+            <label>Porsi Recovery dari Global Risk</label>
+            <input type="number" id="cfgRecoverySplit" step="0.01" min="0" max="1">
+          </div>
+          <div class="field">
+            <label>Lot Awal</label>
+            <input type="number" id="cfgLotStart" step="0.01" min="0.01">
+          </div>
+          <div class="field">
+            <label>Lot Step (kenaikan ladder)</label>
+            <input type="number" id="cfgLotStep" step="0.01" min="0.01">
+          </div>
+          <div class="field">
+            <label>Lot Maksimum</label>
+            <input type="number" id="cfgLotMax" step="0.01" min="0.01">
+          </div>
+          <div class="field">
+            <label>Range Lookback (candle)</label>
+            <input type="number" id="cfgRangeLookback" step="1" min="5">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>Biaya Transaksi</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>Spread (pip)</label>
+            <input type="number" id="cfgSpread" step="0.1" min="0">
+          </div>
+          <div class="field">
+            <label>Komisi per Lot ($)</label>
+            <input type="number" id="cfgCommission" step="0.01" min="0">
+          </div>
+          <div class="field">
+            <label>Swap per Posisi ($ / tick)</label>
+            <input type="number" id="cfgSwap" step="0.01">
+          </div>
+          <div class="field">
+            <label>Nilai Pip (per lot standar)</label>
+            <input type="number" id="cfgPipValue" step="0.01" min="0.0001">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>Bobot Komponen TQI (total ideal = 1.0)</h3>
+        <div class="form-grid">
+          <div class="field"><label>Trend Strength</label><input type="number" id="cfgWTrend" step="0.01" min="0" max="1"></div>
+          <div class="field"><label>Market Structure</label><input type="number" id="cfgWStruct" step="0.01" min="0" max="1"></div>
+          <div class="field"><label>Volatility</label><input type="number" id="cfgWVol" step="0.01" min="0" max="1"></div>
+          <div class="field"><label>Breakout Quality</label><input type="number" id="cfgWBreakout" step="0.01" min="0" max="1"></div>
+          <div class="field"><label>Volume</label><input type="number" id="cfgWVolume" step="0.01" min="0" max="1"></div>
+          <div class="field"><label>Spread</label><input type="number" id="cfgWSpread" step="0.01" min="0" max="1"></div>
+          <div class="field"><label>Momentum</label><input type="number" id="cfgWMomentum" step="0.01" min="0" max="1"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-danger" id="btnResetHistory">Reset Riwayat</button>
+        <button type="button" class="btn" id="btnCancelSettings">Batal</button>
+        <button type="submit" class="btn btn-primary">Simpan &amp; Terapkan</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="abrs-engine.js"></script>
+<script src="price-feed.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
