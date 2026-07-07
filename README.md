@@ -27,18 +27,28 @@ python3 -m http.server 8080
 | `style.css` | Desain "ledger/block" — tiap trading cycle divisualisasikan seperti blok dengan hash-id & rantai riwayat. |
 | `index.html` | Struktur halaman. |
 
-## Rule Entry (v1.3 — diperbaiki)
+## Rule Entry (v2.0 — Basket Hedging + Reverse Martingale)
 
-Entry ABRS sekarang bekerja langsung (market), tanpa menunggu breakout range:
+Entry ABRS sekarang mengikuti rules **Basket Hedging + Reverse Martingale**: entry pertama market, lalu basket dibangun lewat pending order yang saling berselang-seling (alternating BUY_STOP / SELL_STOP) dengan lot progresif.
 
-1. **Entry pertama**: begitu cycle dimulai, sistem langsung buka posisi dengan lot **0.01** — arahnya (BUY/SELL) mengikuti trend jangka pendek (SMA cepat vs SMA lambat dari candle terbaru).
-2. **Hedge lawan arah**: jika harga kemudian bergerak melawan posisi pertama (turun untuk BUY, naik untuk SELL), sistem langsung membuka posisi lawan arah dengan lot tetap **0.03** (satu kali per cycle). Contoh: BUY 0.01 lalu harga turun → open SELL 0.03. Sebaliknya: SELL 0.01 lalu harga naik → open BUY 0.03.
-3. **Close All**: begitu total floating profit basket (BUY+SELL) mencapai target profit tetap (**default $10**, bisa diubah di Pengaturan → "Target Profit Basket"), seluruh posisi ditutup sekaligus.
-4. **Jaring pengaman**: Stop Loss bertingkat & EMERGENCY (Global Risk) tetap berjalan seperti sebelumnya, untuk membatasi kerugian jika harga terus bergerak melawan basket setelah hedge terpasang.
+1. **Entry pertama**: begitu cycle dimulai, sistem langsung buka posisi Level 1 dengan lot **Initial Lot** (default 0.01) — arahnya (BUY/SELL) mengikuti trend jangka pendek (SMA cepat vs SMA lambat dari candle terbaru). Opsional: filter TQI (`tqiTrendFilter`) bisa mewajibkan TQI ≥ threshold (default 70) sebelum cycle boleh mulai.
+2. **Pending order lawan arah**: segera setelah entry pertama, sistem memasang **satu** pending order di sisi berlawanan, pada jarak tetap **Distance** (default 300 point × Point Size) dari harga entry, dengan lot Level berikutnya dari **Tabel Lot progresif**: 0.01, 0.03, 0.06, 0.12, 0.24, 0.48, 0.96, 1.92, 3.84, 7.68 (×3 dari Level 1→2, lalu ×2 tiap level berikutnya). Contoh: BUY 0.01 → pasang SELL_STOP 0.03. Sebaliknya: SELL 0.01 → pasang BUY_STOP 0.03.
+3. **Siklus alternating**: setiap kali pending order tersentuh, posisi baru terbuka, pending lama dihapus, dan pending baru lawan arah dipasang di level berikutnya (BUY → SELL → BUY → SELL → ...) hingga salah satu sisi mencapai batas maksimum. EA hanya pernah punya **1 pending order aktif** setiap saat.
+4. **Batas posisi**: Max BUY (default 10), Max SELL (default 10), Max Total (20). Begitu satu sisi mencapai batasnya, EA berhenti memasang pending baru di sisi itu dan hanya mengelola basket yang ada. Level di atas 10 (bisa terjadi karena Max BUY+SELL sampai 20) memakai lot Level 10 (7.68) karena Tabel Lot hanya mendefinisikan 10 level.
+5. **Close All**: begitu total floating profit basket (BUY+SELL) mencapai target — default **1% Equity** (bisa diubah di Pengaturan → "Target Profit Basket (% Equity)"), seluruh posisi ditutup sekaligus, pending order dihapus, dan basket reset ke Level 1.
+6. **Jaring pengaman (opsional, di luar dokumen rules asli)**: Stop Loss bertingkat & EMERGENCY (Global Risk) tetap tersedia untuk membatasi kerugian jika harga terus melawan basket tanpa reversal — bisa dinonaktifkan di Pengaturan ("Aktifkan Jaring Pengaman") jika ingin murni mengikuti dokumen rules tanpa batas rugi $ tambahan. **Catatan penting**: strategi basket hedging + reverse martingale ini pada dasarnya tidak punya batas rugi bawaan — risiko ekor (tail risk) tetap ada saat market trending kuat searah tanpa reversal, dan tidak ada kombinasi parameter yang menghilangkannya sepenuhnya.
 
-Lot hedge (0.03) dan target profit ($10) bisa disesuaikan di modal Pengaturan (`hedgeLotSize`, `basketTargetUsd` di `abrs-engine.js` / `app.js`).
+Initial Lot, Distance, Point Size, Max BUY/SELL, dan Target Profit (% Equity) semuanya bisa disesuaikan di modal Pengaturan (`initialLot`, `distancePoints`, `pointSize`, `maxBuy`, `maxSell`, `basketTargetPct` di `abrs-engine.js` / `app.js`). Point Size perlu disesuaikan per instrumen (perkiraan: XAU/USD ≈ 0.01, BTC/USD ≈ 1, US30/USD ≈ 1, EUR/USD atau GBP/USD ≈ 0.0001).
 
-## Perubahan di Versi Ini (Evaluasi & Perbaikan)
+## Perubahan di Versi Ini — v2.0 (Basket Hedging + Reverse Martingale)
+
+- **Logic entry diganti total**: dari hedge tunggal (1x lot tetap) di v1.3, menjadi basket ladder alternating BUY_STOP/SELL_STOP dengan Tabel Lot progresif (0.01 → 7.68 di 10 level), sesuai dokumen rules "Basket Hedging + Reverse Martingale V2.0". Lihat bagian **Rule Entry (v2.0)** di atas untuk detail.
+- **Target profit** kini berbasis **% Equity** (default 1%), bukan nilai $ tetap seperti sebelumnya (opsi override $ tetap masih tersedia via `basketTargetUsd` di kode jika dibutuhkan).
+- **Batas posisi eksplisit**: Max BUY, Max SELL (masing-masing default 10, bisa diatur 1-10) dan Max Total (20) — begitu tercapai, EA berhenti memasang pending baru di sisi tsb.
+- **Jaring pengaman (Stop Loss bertingkat & EMERGENCY)** kini bisa dimatikan lewat toggle "Aktifkan Jaring Pengaman" di Pengaturan, untuk yang ingin murni mengikuti dokumen rules tanpa proteksi $ tambahan. Default tetap aktif karena strategi ini pada dasarnya tidak membatasi rugi sendiri.
+- **Filter TQI opsional** (`tqiTrendFilter`, nonaktif secara default) tersedia untuk hanya memulai cycle saat TQI ≥ threshold, sesuai saran di dokumen rules untuk meningkatkan peluang basket mencapai target.
+
+## Perubahan di Versi Sebelumnya — v1.3 (Evaluasi & Perbaikan)
 
 - **Grafik harga + marker Entry** (`priceChart` canvas di `app.js`/`index.html`): candle, garis Resistance/Support, level Pending Order, dan segitiga Entry (hijau=BUY, merah=SELL, outline abu=LOCKED) — murni canvas 2D, tanpa library luar.
 - **Stop Loss bertingkat** (`basketStopLossPct` di `abrs-engine.js`): sebelumnya cycle yang kalah hanya bisa berakhir `EMERGENCY` (rugi penuh 100% Global Risk Budget) — status `LOSS` disebut di komentar & di semua kode UI/statistik tapi TIDAK PERNAH benar-benar terjadi. Sekarang cycle bisa ditutup `LOSS` lebih awal (default di 60% Global Risk Budget) sebelum menyentuh EMERGENCY, membatasi kerugian per cycle.

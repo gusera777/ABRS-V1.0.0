@@ -165,10 +165,10 @@
       </div>
       <div class="learning-band-row"><span>Modal Awal</span><span></span><span id="rsCapital" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Equity Cycle</span><span></span><span id="rsEquity" style="text-align:right">—</span></div>
-      <div class="learning-band-row"><span>Global Risk</span><span></span><span id="rsGlobalRisk" style="text-align:right">—</span></div>
-      <div class="learning-band-row"><span>Recovery Budget</span><span></span><span id="rsRecoveryBudget" style="text-align:right">—</span></div>
-      <div class="learning-band-row"><span>Floating Budget</span><span></span><span id="rsFloatingBudget" style="text-align:right">—</span></div>
-      <div class="learning-band-row"><span>Lot Awal / Hedge / Maks</span><span></span><span id="rsLot" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Global Risk (jaring pengaman)</span><span></span><span id="rsGlobalRisk" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Distance (jarak antar level)</span><span></span><span id="rsRecoveryBudget" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Batas Posisi (BUY/SELL/Total)</span><span></span><span id="rsFloatingBudget" style="text-align:right">—</span></div>
+      <div class="learning-band-row"><span>Tabel Lot (Level 1 → 10)</span><span></span><span id="rsLot" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Spread (pip)</span><span></span><span id="rsSpread" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Komisi / lot</span><span></span><span id="rsCommission" style="text-align:right">—</span></div>
       <div class="learning-band-row"><span>Pip Value</span><span></span><span id="rsPipValue" style="text-align:right">—</span></div>
@@ -276,39 +276,58 @@
       </div>
 
       <div class="form-section">
-        <h3>Manajemen Risiko</h3>
+        <h3>Basket Hedging + Reverse Martingale</h3>
         <div class="form-grid">
+          <div class="field">
+            <label>Initial Lot (Level 1)</label>
+            <input type="number" id="cfgLotStart" step="0.01" min="0.01">
+            <span class="field-hint">Lot entry pertama. Tabel Lot Level 2-10 dihitung otomatis secara progresif (x3 lalu x2 tiap level) dari nilai ini.</span>
+          </div>
+          <div class="field">
+            <label>Distance (point)</label>
+            <input type="number" id="cfgDistancePoints" step="1" min="1">
+            <span class="field-hint">Jarak antar level breakout/pending order, dalam point.</span>
+          </div>
+          <div class="field">
+            <label>Point Size (nilai harga per point)</label>
+            <input type="number" id="cfgPointSize" step="0.0001" min="0.0001">
+            <span class="field-hint">Sesuaikan per instrumen — XAU/USD ≈ 0.01, BTC/USD ≈ 1, US30/USD ≈ 1, EUR/USD atau GBP/USD ≈ 0.0001.</span>
+          </div>
+          <div class="field">
+            <label>Max BUY</label>
+            <input type="number" id="cfgMaxBuy" step="1" min="1" max="10">
+          </div>
+          <div class="field">
+            <label>Max SELL</label>
+            <input type="number" id="cfgMaxSell" step="1" min="1" max="10">
+          </div>
+          <div class="field">
+            <label>Target Profit Basket (% Equity)</label>
+            <input type="number" id="cfgTargetProfit" step="0.001" min="0.001">
+            <span class="field-hint">Semua posisi ditutup (Close All) begitu total floating profit basket mencapai persentase ini dari equity awal cycle. Contoh: 0.01 = 1%.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>Proteksi Tambahan (Jaring Pengaman, Opsional)</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>Aktifkan Jaring Pengaman</label>
+            <select id="cfgEnableSafetyNet">
+              <option value="true">Aktif</option>
+              <option value="false">Nonaktif (murni ikuti rules dokumen)</option>
+            </select>
+            <span class="field-hint">Sistem basket martingale tidak punya batas rugi bawaan. Jaring pengaman ini di luar dokumen rules asli, disarankan tetap aktif untuk akun riil.</span>
+          </div>
           <div class="field">
             <label>Global Risk (% dari modal)</label>
             <input type="number" id="cfgGlobalRisk" step="0.01" min="0.01" max="1">
           </div>
           <div class="field">
-            <label>Porsi Recovery dari Global Risk</label>
-            <input type="number" id="cfgRecoverySplit" step="0.01" min="0" max="1">
-          </div>
-          <div class="field">
             <label>Stop Loss Basket (% dari Global Risk)</label>
             <input type="number" id="cfgStopLoss" step="0.01" min="0.1" max="1">
             <span class="field-hint">Cycle ditutup 'LOSS' lebih awal di level ini, sebelum menyentuh 100% Global Risk (EMERGENCY).</span>
-          </div>
-          <div class="field">
-            <label>Lot Entry Pertama</label>
-            <input type="number" id="cfgLotStart" step="0.01" min="0.01">
-            <span class="field-hint">Lot untuk entry pertama (BUY atau SELL, tergantung arah trend).</span>
-          </div>
-          <div class="field">
-            <label>Lot Hedge (lawan arah)</label>
-            <input type="number" id="cfgHedgeLot" step="0.01" min="0.01">
-            <span class="field-hint">Lot tetap yang dibuka di sisi berlawanan begitu harga bergerak melawan entry pertama.</span>
-          </div>
-          <div class="field">
-            <label>Lot Maksimum (batas aman)</label>
-            <input type="number" id="cfgLotMax" step="0.01" min="0.01">
-          </div>
-          <div class="field">
-            <label>Target Profit Basket ($)</label>
-            <input type="number" id="cfgTargetProfit" step="0.01" min="0.01">
-            <span class="field-hint">Semua posisi ditutup (Close All) begitu total profit basket mencapai nilai ini.</span>
           </div>
         </div>
       </div>

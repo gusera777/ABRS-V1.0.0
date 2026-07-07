@@ -22,12 +22,14 @@ const DEFAULT_SETTINGS = {
   capital: 10000,
   apiKey: '', // JANGAN hardcode API key pribadi di source — isi lewat modal Pengaturan, tersimpan hanya di localStorage
   globalRiskPct: 0.15,
-  recoveryBudgetSplit: 0.35,
   basketStopLossPct: 0.6,
-  lotStart: 0.01,
-  hedgeLotSize: 0.03,
-  lotMax: 0.20,
-  basketTargetUsd: 10,
+  enableSafetyNet: true,
+  lotStart: 0.01,            // Lot Level 1 (Initial Lot)
+  distancePoints: 300,       // Jarak antar level (point)
+  pointSize: 0.01,           // Nilai harga 1 point (sesuaikan per instrumen)
+  maxBuy: 10,
+  maxSell: 10,
+  basketTargetPct: 0.01,     // 1% Equity
   spreadPips: 2,
   commissionPerLot: 3.5,
   swapPerTick: 0,
@@ -101,12 +103,14 @@ function buildEngineConfig(s) {
   return {
     capital: s.capital,
     globalRiskPct: s.globalRiskPct,
-    recoveryBudgetSplit: s.recoveryBudgetSplit,
     basketStopLossPct: s.basketStopLossPct,
-    lotStart: s.lotStart,
-    hedgeLotSize: s.hedgeLotSize,
-    lotMax: s.lotMax,
-    basketTargetUsd: s.basketTargetUsd,
+    enableSafetyNet: s.enableSafetyNet,
+    initialLot: s.lotStart,
+    distancePoints: s.distancePoints,
+    pointSize: s.pointSize,
+    maxBuy: s.maxBuy,
+    maxSell: s.maxSell,
+    basketTargetPct: s.basketTargetPct,
     tqiWeights: s.tqiWeights
   };
 }
@@ -253,16 +257,16 @@ async function pollQuoteTick() {
 function handleTick(price) {
   if (engine.tradingDisabled) return;
 
-  const positionsBeforeHedge = [...engine.positions];
-  engine.checkHedgeTrigger(price);
-  applyEntryCosts(positionsBeforeHedge);
+  const positionsBeforePending = [...engine.positions];
+  engine.checkPendingOrders(price);
+  applyEntryCosts(positionsBeforePending);
 
   const openCount = engine.positions.filter(p => p.status !== 'CLOSED').length;
   const swapTotal = openCount * settings.swapPerTick;
 
   engine.updateFloating(price, settings.pipValue, swapTotal, costsAccum);
 
-  engine.checkGlobalRisk();
+  if (settings.enableSafetyNet) engine.checkGlobalRisk();
   engine.checkBasketTarget();
 
   pullEventsToLog();
@@ -327,7 +331,7 @@ function renderBasket() {
   const pnlPct = c.equityStart ? (pnl / c.equityStart) * 100 : 0;
   el.basketPnlPct.textContent = fmtPct(pnlPct) + ' dari equity cycle';
 
-  el.basketMeta.textContent = `Mode pasar: ${c.marketMode ?? '—'} · Target: ${c.basketTarget ? fmtMoney(c.basketTarget) : '—'}`;
+  el.basketMeta.textContent = `Mode pasar: ${c.marketMode ?? '—'} · BUY ${c.buyLevel}/${engine.config.maxBuy} · SELL ${c.sellLevel}/${engine.config.maxSell} · Target: ${c.basketTarget ? fmtMoney(c.basketTarget) : '—'}`;
 
   const targetPct = c.basketTarget ? Math.max(0, Math.min(100, (pnl / c.basketTarget) * 100)) : 0;
   el.basketTargetFill.style.width = targetPct + '%';
@@ -337,7 +341,7 @@ function renderBasket() {
   el.riskFill.style.width = riskUsedPct + '%';
   el.riskLabel.textContent = `${fmtMoney(Math.max(0, -pnl))} / ${fmtMoney(engine.globalRiskBudget)}`;
 
-  el.recoveryBadge.textContent = `Recovery: ${c.recoveryCount}x`;
+  el.recoveryBadge.textContent = `Level: ${c.recoveryCount + 1}x`;
   el.maxLotBadge.textContent = `Max Lot: ${c.maxLotUsed.toFixed(2)}`;
   el.ddBadge.textContent = `Max DD: ${fmtMoney(c.maxDrawdown)}`;
 }
@@ -553,7 +557,7 @@ function renderPositions() {
   } else {
     el.positionsList.innerHTML = active.map(p => `
       <div class="position-row">
-        <span class="side-tag ${p.side.toLowerCase()}">${p.side}</span>
+        <span class="side-tag ${p.side.toLowerCase()}">${p.side} L${p.level ?? '—'}</span>
         <div>
           <div class="pos-meta">Lot ${p.lot.toFixed(2)} @ ${p.entryPrice.toFixed(4)}</div>
           <div class="pos-meta">${fmtTime(p.openTime)}</div>
@@ -569,7 +573,7 @@ function renderPositions() {
   } else {
     el.pendingList.innerHTML = engine.pendingOrders.map(po => `
       <div class="flex" style="justify-content:space-between;padding:6px 0;font-family:var(--font-mono);font-size:12px">
-        <span class="side-tag ${po.side.toLowerCase()}" style="padding:2px 8px">${po.type}</span>
+        <span class="side-tag ${po.side.toLowerCase()}" style="padding:2px 8px">${po.type} L${po.level ?? '—'}</span>
         <span class="text-dim">Trigger @ ${po.triggerPrice.toFixed(4)} · Lot ${po.lot.toFixed(2)}</span>
       </div>
     `).join('');
@@ -579,10 +583,12 @@ function renderPositions() {
 function renderRiskSummary() {
   el.rsCapital.textContent = fmtMoney(settings.capital);
   el.rsEquity.textContent = fmtMoney(engine.cycle.equityStart);
-  el.rsGlobalRisk.textContent = `${fmtMoney(engine.globalRiskBudget)} (${(settings.globalRiskPct * 100).toFixed(0)}%)`;
-  el.rsRecoveryBudget.textContent = fmtMoney(engine.recoveryBudget);
-  el.rsFloatingBudget.textContent = fmtMoney(engine.floatingBudget);
-  el.rsLot.textContent = `${settings.lotStart.toFixed(2)} awal / ${settings.hedgeLotSize.toFixed(2)} hedge / ${settings.lotMax.toFixed(2)} maks`;
+  el.rsGlobalRisk.textContent = settings.enableSafetyNet
+    ? `${fmtMoney(engine.globalRiskBudget)} (${(settings.globalRiskPct * 100).toFixed(0)}%)`
+    : 'Nonaktif';
+  el.rsRecoveryBudget.textContent = `${settings.distancePoints} point (${(settings.distancePoints * settings.pointSize).toFixed(4)})`;
+  el.rsFloatingBudget.textContent = `BUY ${settings.maxBuy} / SELL ${settings.maxSell} / Total ${settings.maxBuy + settings.maxSell}`;
+  el.rsLot.textContent = `Level 1: ${settings.lotStart.toFixed(2)} → Level 10: ${engine.lotTable.at(-1).toFixed(2)}`;
   el.rsSpread.textContent = `${settings.spreadPips} pip`;
   el.rsCommission.textContent = fmtMoney(settings.commissionPerLot) + '/lot';
   el.rsPipValue.textContent = fmtMoney(settings.pipValue);
@@ -699,13 +705,13 @@ function renderAIInsights() {
   if (wrWith != null && wrWithout != null) {
     if (wrWith < wrWithout - 15) {
       insights.push({
-        tag: 'Recovery Budget', icon: '↓',
-        text: `Cycle yang memakai recovery menang <strong>${wrWith.toFixed(0)}%</strong>, jauh di bawah cycle tanpa recovery (<strong>${wrWithout.toFixed(0)}%</strong>). Pertimbangkan menurunkan <strong>recoveryBudgetSplit</strong> atau <strong>lotMax</strong>.`
+        tag: 'Ladder Level', icon: '↓',
+        text: `Cycle yang sampai ke level lanjutan (Level 2+) menang <strong>${wrWith.toFixed(0)}%</strong>, jauh di bawah cycle yang selesai di Level 1 (<strong>${wrWithout.toFixed(0)}%</strong>). Pertimbangkan memperbesar <strong>Distance</strong> atau menurunkan <strong>Max BUY/SELL</strong>.`
       });
     } else if (wrWith > wrWithout + 15) {
       insights.push({
-        tag: 'Recovery Budget', icon: '↑',
-        text: `Recovery terbukti efektif — win rate <strong>${wrWith.toFixed(0)}%</strong> vs <strong>${wrWithout.toFixed(0)}%</strong> tanpa recovery. Porsi recovery saat ini bisa dipertahankan atau dinaikkan sedikit.`
+        tag: 'Ladder Level', icon: '↑',
+        text: `Basket yang lanjut ke level berikutnya terbukti efektif — win rate <strong>${wrWith.toFixed(0)}%</strong> vs <strong>${wrWithout.toFixed(0)}%</strong> yang berhenti di Level 1. Pengaturan Distance & tabel lot saat ini cukup baik.`
       });
     }
   }
@@ -765,13 +771,15 @@ function renderAIInsights() {
 function openSettings() {
   $('cfgCapital').value = settings.capital;
   $('cfgApiKey').value = settings.apiKey;
+  $('cfgEnableSafetyNet').value = settings.enableSafetyNet ? 'true' : 'false';
   $('cfgGlobalRisk').value = settings.globalRiskPct;
-  $('cfgRecoverySplit').value = settings.recoveryBudgetSplit;
   $('cfgStopLoss').value = settings.basketStopLossPct;
   $('cfgLotStart').value = settings.lotStart;
-  $('cfgHedgeLot').value = settings.hedgeLotSize;
-  $('cfgLotMax').value = settings.lotMax;
-  $('cfgTargetProfit').value = settings.basketTargetUsd;
+  $('cfgDistancePoints').value = settings.distancePoints;
+  $('cfgPointSize').value = settings.pointSize;
+  $('cfgMaxBuy').value = settings.maxBuy;
+  $('cfgMaxSell').value = settings.maxSell;
+  $('cfgTargetProfit').value = settings.basketTargetPct;
   $('cfgSpread').value = settings.spreadPips;
   $('cfgCommission').value = settings.commissionPerLot;
   $('cfgSwap').value = settings.swapPerTick;
@@ -802,13 +810,15 @@ el.settingsForm.addEventListener('submit', e => {
     ...settings,
     capital: parseFloat($('cfgCapital').value) || DEFAULT_SETTINGS.capital,
     apiKey: $('cfgApiKey').value.trim(),
+    enableSafetyNet: $('cfgEnableSafetyNet').value === 'true',
     globalRiskPct: parseFloat($('cfgGlobalRisk').value) || DEFAULT_SETTINGS.globalRiskPct,
-    recoveryBudgetSplit: parseFloat($('cfgRecoverySplit').value) || DEFAULT_SETTINGS.recoveryBudgetSplit,
     basketStopLossPct: parseFloat($('cfgStopLoss').value) || DEFAULT_SETTINGS.basketStopLossPct,
     lotStart: parseFloat($('cfgLotStart').value) || DEFAULT_SETTINGS.lotStart,
-    hedgeLotSize: parseFloat($('cfgHedgeLot').value) || DEFAULT_SETTINGS.hedgeLotSize,
-    lotMax: parseFloat($('cfgLotMax').value) || DEFAULT_SETTINGS.lotMax,
-    basketTargetUsd: parseFloat($('cfgTargetProfit').value) || DEFAULT_SETTINGS.basketTargetUsd,
+    distancePoints: parseFloat($('cfgDistancePoints').value) || DEFAULT_SETTINGS.distancePoints,
+    pointSize: parseFloat($('cfgPointSize').value) || DEFAULT_SETTINGS.pointSize,
+    maxBuy: Math.min(10, Math.max(1, parseInt($('cfgMaxBuy').value, 10) || DEFAULT_SETTINGS.maxBuy)),
+    maxSell: Math.min(10, Math.max(1, parseInt($('cfgMaxSell').value, 10) || DEFAULT_SETTINGS.maxSell)),
+    basketTargetPct: parseFloat($('cfgTargetProfit').value) || DEFAULT_SETTINGS.basketTargetPct,
     spreadPips: parseFloat($('cfgSpread').value) || 0,
     commissionPerLot: parseFloat($('cfgCommission').value) || 0,
     swapPerTick: parseFloat($('cfgSwap').value) || 0,

@@ -1,45 +1,64 @@
 /**
  * ============================================================
- *  ABRS V1.3 - Adaptive Breakout Recovery System
+ *  ABRS V2.0 - Adaptive Breakout Recovery System
  *  Core Trading Logic Engine untuk GUSERA SATS
+ *  (Basket Hedging + Reverse Martingale V2.0)
  * ============================================================
  *
  *  Implementasi murni client-side (vanilla JS), tanpa backend.
  *  Modul ini adalah SIGNAL / SIMULATION ENGINE - tidak melakukan
- *  eksekusi order nyata ke broker manapun. Semua "posisi" adalah
- *  representasi virtual yang dihitung dari price feed (mis. dari
- *  Twelve Data API) dan bisa dipakai untuk:
- *    - menghasilkan sinyal ENTRY/HEDGE/CLOSE
+ *  eksekusi order nyata ke broker manapun. Semua "posisi" dan
+ *  "pending order" adalah representasi virtual yang dihitung dari
+ *  price feed dan bisa dipakai untuk:
+ *    - menghasilkan sinyal ENTRY / PENDING / CLOSE
  *    - mencatat riwayat cycle untuk analisis / self-learning
  *    - ditampilkan di UI (status basket, TQI, target, dsb)
  *
  *  ------------------------------------------------------------
- *  RULE ENTRY (v1.3 - diperbaiki):
+ *  RULE ENTRY (v2.0 - Basket Hedging + Reverse Martingale):
  *  ------------------------------------------------------------
- *  1. Entry pertama dibuka LANGSUNG (market, bukan pending
- *     BUY_STOP/SELL_STOP menunggu breakout range) begitu cycle
- *     dimulai. Arah (BUY/SELL) ditentukan oleh arah trend jangka
- *     pendek (SMA cepat vs SMA lambat dari candle terbaru).
- *     Lot = lotStart (default 0.01).
+ *  1. Begitu cycle dimulai, EA langsung membuka entry pertama
+ *     (market) dengan lot Level 1 (default 0.01). Arah (BUY/SELL)
+ *     ditentukan oleh arah trend jangka pendek (SMA cepat vs SMA
+ *     lambat), atau opsional digerbang oleh filter TQI (lihat
+ *     `tqiTrendFilter`).
  *
- *     Contoh: entry pertama BUY 0.01.
+ *  2. Begitu entry pertama terbuka, EA langsung memasang SATU
+ *     pending order lawan arah pada jarak tetap (`distancePoints`
+ *     x `pointSize`) dari harga entry, dengan lot Level berikutnya
+ *     dari Tabel Lot progresif (0.01, 0.03, 0.06, 0.12, 0.24, 0.48,
+ *     0.96, 1.92, 3.84, 7.68 - x3 di level 2, x2 setiap level
+ *     berikutnya).
  *
- *  2. Jika harga bergerak MELAWAN posisi pertama (turun untuk
- *     BUY, naik untuk SELL), sistem langsung membuka posisi
- *     HEDGE di sisi berlawanan dengan lot tetap = hedgeLotSize
- *     (default 0.03). Hedge ini hanya terjadi SEKALI per cycle.
+ *  3. Setiap kali pending order tersentuh (triggered), EA:
+ *       a. Membuka posisi baru di level tsb.
+ *       b. Menghapus pending order tsb (EA hanya boleh punya
+ *          1 pending order aktif setiap saat).
+ *       c. Memasang pending order BARU di sisi berlawanan, pada
+ *          jarak tetap dari harga trigger, dengan lot level
+ *          berikutnya.
+ *     Siklus ini berulang: BUY -> SELL -> BUY -> SELL -> ...
+ *     hingga salah satu sisi mencapai batas maksimum.
  *
- *     Contoh: BUY 0.01 floating rugi -> open SELL 0.03.
- *     Sebaliknya: SELL 0.01 floating rugi (harga naik) -> open BUY 0.03.
+ *  4. Batas posisi: Maksimum BUY = 10, Maksimum SELL = 10,
+ *     Maksimum Total = 20. Begitu satu sisi mencapai batasnya,
+ *     EA berhenti memasang pending baru di sisi itu (tidak
+ *     membuat level 11) dan hanya mengelola basket yang sudah ada
+ *     hingga target profit tercapai atau proteksi lain aktif.
  *
- *  3. Seluruh basket (semua posisi berjalan) ditutup (Close All)
- *     begitu total floating profit basket >= target profit tetap
- *     dalam $ (basketTargetUsd, default $10).
+ *  5. Basket dianggap satu kesatuan - tidak ada TP/SL individual
+ *     per posisi. Begitu total floating profit basket (BUY+SELL)
+ *     >= target (default 1% Equity), SELURUH posisi ditutup
+ *     sekaligus (Close All), pending order dihapus, dan basket
+ *     di-reset kembali ke Level 1.
  *
- *  4. Proteksi risiko tetap berjalan sebagai jaring pengaman:
- *     Stop Loss bertingkat (basketStopLossPct x globalRiskBudget)
- *     dan EMERGENCY (100% globalRiskBudget) tetap menutup basket
- *     lebih awal jika harga terus melawan kedua posisi.
+ *  6. Proteksi tambahan (di luar dokumen rules asli, sebagai
+ *     jaring pengaman opsional untuk trading akun riil): Stop
+ *     Loss bertingkat & EMERGENCY (Global Risk) tetap tersedia dan
+ *     bisa menutup basket lebih awal jika harga terus bergerak
+ *     melawan basket tanpa reversal (tail risk dari sistem
+ *     martingale-like ini tidak bisa dihilangkan sepenuhnya,
+ *     hanya dibatasi).
  *
  *  Alur pemakaian singkat:
  *    const engine = new ABRSEngine({ capital: 10000 });
@@ -56,17 +75,46 @@ class ABRSEngine {
   constructor(config = {}) {
     this.config = {
       capital: config.capital ?? 10000,
-      globalRiskPct: config.globalRiskPct ?? 0.15,      // 15% dari modal
-      recoveryBudgetSplit: config.recoveryBudgetSplit ?? 0.35, // porsi budget hedge dari global risk (info/limit)
+
+      // --- Proteksi tambahan (opsional, di luar dokumen rules asli) ---
+      globalRiskPct: config.globalRiskPct ?? 0.15,       // 15% dari modal - dipakai sbg jaring pengaman
       basketStopLossPct: config.basketStopLossPct ?? 0.6, // cycle ditutup 'LOSS' saat basketProfit <= -(globalRiskBudget * pct), sebelum menyentuh EMERGENCY penuh
-      lotStart: config.lotStart ?? 0.01,       // lot entry pertama
-      hedgeLotSize: config.hedgeLotSize ?? 0.03, // lot tetap untuk hedge lawan arah
-      lotMax: config.lotMax ?? 0.20,           // batas aman lot (hedge tidak boleh melebihi ini)
-      basketTargetUsd: config.basketTargetUsd ?? 10, // target profit tetap ($) untuk Close All
-      trendFastPeriod: config.trendFastPeriod ?? 10,  // SMA cepat untuk deteksi arah entry pertama
-      trendSlowPeriod: config.trendSlowPeriod ?? 30,  // SMA lambat untuk deteksi arah entry pertama
-      // Bobot komponen penyusun TQI (total idealnya = 1) - dipakai untuk info/analisa,
-      // tidak lagi menggerbang entry (entry selalu terjadi begitu cycle dimulai).
+      enableSafetyNet: config.enableSafetyNet ?? true,    // matikan jika ingin murni mengikuti dokumen rules (tanpa stoploss $)
+
+      // --- Tabel Lot Progresif ---
+      initialLot: config.initialLot ?? config.lotStart ?? 0.01, // lot Level 1
+      // Multiplier relatif terhadap initialLot untuk Level 1..10.
+      // Default menghasilkan 0.01, 0.03, 0.06, 0.12, 0.24, 0.48, 0.96, 1.92, 3.84, 7.68
+      // (x3 dari Level 1 ke Level 2, lalu x2 setiap level berikutnya) - sesuai tabel lot dokumen.
+      lotMultipliers: config.lotMultipliers ?? [1, 3, 6, 12, 24, 48, 96, 192, 384, 768],
+
+      // --- Jarak Breakout / Pending Order ---
+      distancePoints: config.distancePoints ?? 300,  // jarak antar level, dalam "point"
+      pointSize: config.pointSize ?? 0.01,            // nilai harga 1 point (sesuaikan per instrumen: XAU~0.01, BTC~1, EUR/USD~0.0001, US30~1)
+
+      // --- Batas Posisi ---
+      maxBuy: config.maxBuy ?? 10,
+      maxSell: config.maxSell ?? 10,
+      maxTotal: config.maxTotal ?? (config.maxBuy != null && config.maxSell != null ? config.maxBuy + config.maxSell : 20),
+
+      // --- Target Profit Basket ---
+      // Jika basketTargetPct diisi (default 1% Equity), target dihitung sebagai
+      // persentase dari equity awal cycle. basketTargetUsd (jika diisi) akan
+      // dipakai sebagai override nilai tetap $ (menonaktifkan mode persentase).
+      basketTargetPct: config.basketTargetPct ?? 0.01, // 1% Equity
+      basketTargetUsd: config.basketTargetUsd ?? null,
+
+      // --- Deteksi arah entry pertama (SMA cepat vs SMA lambat) ---
+      trendFastPeriod: config.trendFastPeriod ?? 10,
+      trendSlowPeriod: config.trendSlowPeriod ?? 30,
+
+      // --- Filter TQI opsional (saran dari dokumen rules) ---
+      // Jika enabled, cycle hanya dimulai bila TQI >= threshold, supaya entry
+      // pertama searah dengan tren yang cukup kuat (bukan sekadar SMA silang tipis).
+      tqiTrendFilter: config.tqiTrendFilter ?? { enabled: false, threshold: 70 },
+
+      // Bobot komponen penyusun TQI (total idealnya = 1) - dipakai untuk info/analisa
+      // dan (opsional) filter TQI di atas.
       tqiWeights: config.tqiWeights ?? {
         trendStrength: 0.25,
         marketStructure: 0.20,
@@ -77,6 +125,8 @@ class ABRSEngine {
         momentum: 0.10
       }
     };
+
+    this.lotTable = this.config.lotMultipliers.map(m => Math.round(this.config.initialLot * m * 100) / 100);
 
     this.resetCycle(this.config.capital);
   }
@@ -96,24 +146,23 @@ class ABRSEngine {
       tqiStart: null,
       marketMode: null,      // 'RANGE' | 'TREND' (info)
       initialSide: null,     // 'BUY' | 'SELL' - arah entry pertama
-      basketTarget: null,    // target profit tetap ($)
+      basketTarget: null,    // target profit ($) untuk cycle ini (hasil hitung dari basketTargetPct atau basketTargetUsd)
       basketProfit: 0,
       maxDrawdown: 0,
-      recoveryCount: 0,      // jumlah hedge terpasang (0 atau 1)
+      recoveryCount: 0,      // jumlah posisi tambahan di luar entry pertama (level 2, 3, dst yang sudah terpicu)
       maxLotUsed: 0,
+      globalLevel: 0,        // step ke berapa dalam urutan alternating BUY/SELL (dipakai untuk indeks Tabel Lot)
+      buyLevel: 0,           // jumlah posisi BUY yang sudah terbuka (0-10, dipakai untuk cek batas Max BUY)
+      sellLevel: 0,          // jumlah posisi SELL yang sudah terbuka (0-10, dipakai untuk cek batas Max SELL)
       result: null,          // 'WIN' | 'LOSS' | 'EMERGENCY'
       status: 'IDLE'         // IDLE, BUY_ACTIVE, SELL_ACTIVE, CLOSED
     };
 
-    this.positions = [];      // { id, side, lot, entryPrice, status, openTime, floatingPnl }
-    this.pendingOrders = [];  // selalu kosong - dipertahankan untuk kompatibilitas UI lama
+    this.positions = [];      // { id, side, lot, level, entryPrice, status, openTime, floatingPnl }
+    this.pendingOrders = [];  // maksimum 1 item: { id, side, type, level, lot, triggerPrice, createdAt }
     this.events = [];
 
     this.globalRiskBudget = this.config.capital * this.config.globalRiskPct;
-    this.recoveryBudget = this.globalRiskBudget * this.config.recoveryBudgetSplit;
-    this.floatingBudget = this.globalRiskBudget - this.recoveryBudget;
-    this.recoveryBudgetUsed = 0;
-    this.hedgePlaced = false;
     this.tradingDisabled = false;
   }
 
@@ -123,7 +172,7 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // TREND QUALITY INDEX (TQI) - komposit 0-100 (info/analisa)
+  // TREND QUALITY INDEX (TQI) - komposit 0-100 (info/analisa + filter opsional)
   // ------------------------------------------------------------
   // components = { trendStrength, marketStructure, volatility,
   //                breakoutQuality, volume, spread, momentum } masing2 0-100
@@ -149,7 +198,7 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // MARKET MODE (info, tidak menggerbang entry)
+  // MARKET MODE (info)
   // ------------------------------------------------------------
   getMarketMode(tqi) {
     return tqi <= 30 ? 'RANGE' : 'TREND';
@@ -168,13 +217,17 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // ENTRY ENGINE - membuka posisi (entry pertama maupun hedge)
+  // ENTRY ENGINE - membuka posisi. `level` = step ke berapa dalam
+  // urutan alternating global (1 = entry pertama, 2 = pending
+  // pertama yang triggered, dst) - dipakai untuk mengindeks Tabel
+  // Lot (0.01, 0.03, 0.06, 0.12, ...), BUKAN hitungan per sisi.
   // ------------------------------------------------------------
-  openPosition(side, lot, price, reason) {
+  openPosition(side, lot, level, price, reason) {
     const position = {
       id: `pos_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       side,
       lot,
+      level,
       entryPrice: price,
       status: 'ACTIVE',
       openTime: Date.now(),
@@ -182,37 +235,96 @@ class ABRSEngine {
     };
     this.positions.push(position);
     this.cycle.maxLotUsed = Math.max(this.cycle.maxLotUsed, lot);
-    this.logEvent({ orderId: position.id, type: side, lot, price, event: 'ENTRY', reason });
+    this.cycle.globalLevel = Math.max(this.cycle.globalLevel, level);
+    if (side === 'BUY') this.cycle.buyLevel += 1; else this.cycle.sellLevel += 1;
+    if (level > 1) this.cycle.recoveryCount += 1;
+    this.logEvent({ orderId: position.id, type: side, lot, level, price, event: 'ENTRY', reason });
     return position;
   }
 
   // ------------------------------------------------------------
-  // HEDGE RULE
+  // DISTANCE (jarak antar level dalam satuan harga)
   // ------------------------------------------------------------
-  // Begitu harga bergerak melawan posisi pertama, langsung buka
-  // posisi lawan arah dengan lot tetap (hedgeLotSize). Hanya
-  // terjadi sekali per cycle.
+  getDistancePrice() {
+    return this.config.distancePoints * this.config.pointSize;
+  }
+
+  // ------------------------------------------------------------
+  // PENDING ORDER - memasang SATU pending order lawan arah, pada
+  // jarak tetap dari harga acuan. Lot diambil dari Tabel Lot
+  // berdasarkan STEP GLOBAL berikutnya dalam urutan alternating
+  // (mis. BUY level1=0.01, SELL level2=0.03, BUY level3=0.06, ...
+  // sesuai contoh alur di dokumen rules - bukan hitungan per sisi).
+  // Tidak memasang apapun jika sisi tsb sudah mencapai batas
+  // Max BUY/Max SELL, atau total posisi sudah mencapai maxTotal.
+  // ------------------------------------------------------------
+  placeNextPendingOrder(anchorPrice, justFilledSide, justFilledLevel = this.cycle.globalLevel) {
+    this.pendingOrders = []; // EA hanya boleh punya 1 pending order aktif
+
+    if (this.cycle.status === 'CLOSED' || this.tradingDisabled) return null;
+
+    const totalOpen = this.cycle.buyLevel + this.cycle.sellLevel;
+    if (totalOpen >= this.config.maxTotal) {
+      this.logEvent({ event: 'PENDING_SKIPPED', reason: 'MAX_TOTAL_POSITIONS_REACHED' });
+      return null;
+    }
+
+    const nextSide = justFilledSide === 'BUY' ? 'SELL' : 'BUY';
+    const countForSide = nextSide === 'BUY' ? this.cycle.buyLevel : this.cycle.sellLevel;
+    const maxForSide = nextSide === 'BUY' ? this.config.maxBuy : this.config.maxSell;
+
+    if (countForSide >= maxForSide) {
+      this.logEvent({ event: 'PENDING_SKIPPED', reason: `MAX_${nextSide}_POSITIONS_REACHED` });
+      return null;
+    }
+
+    const nextGlobalLevel = justFilledLevel + 1;
+    // Tabel Lot hanya mendefinisikan 10 level; jika urutan global melebihi 10
+    // (mungkin terjadi karena Max BUY/SELL bisa sampai 10 masing-masing = 20 total),
+    // gunakan lot Level 10 (nilai terbesar) untuk step-step selanjutnya.
+    const lotIndex = Math.min(nextGlobalLevel, this.lotTable.length) - 1;
+    const lot = this.lotTable[lotIndex];
+    const distance = this.getDistancePrice();
+    const triggerPrice = nextSide === 'BUY' ? anchorPrice + distance : anchorPrice - distance;
+
+    const pending = {
+      id: `pend_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      side: nextSide,
+      type: nextSide === 'BUY' ? 'BUY_STOP' : 'SELL_STOP',
+      level: nextGlobalLevel,
+      lot,
+      triggerPrice,
+      createdAt: Date.now()
+    };
+    this.pendingOrders = [pending];
+    this.logEvent({ orderId: pending.id, type: pending.type, lot, level: nextGlobalLevel, price: triggerPrice, event: 'PENDING_PLACED', reason: 'LADDER_NEXT_LEVEL' });
+    return pending;
+  }
+
+  // ------------------------------------------------------------
+  // CEK & EKSEKUSI PENDING ORDER - dipanggil tiap tick harga baru.
+  // Jika trigger tersentuh: buka posisi di level tsb, hapus
+  // pending, lalu pasang pending baru (lawan arah, level berikutnya)
+  // jika kapasitas masih ada.
+  // ------------------------------------------------------------
+  checkPendingOrders(price) {
+    if (this.tradingDisabled || this.cycle.status === 'CLOSED' || !this.pendingOrders.length) return null;
+
+    const po = this.pendingOrders[0];
+    const triggered = po.type === 'BUY_STOP' ? price >= po.triggerPrice : price <= po.triggerPrice;
+    if (!triggered) return null;
+
+    const position = this.openPosition(po.side, po.lot, po.level, po.triggerPrice, 'PENDING_ORDER_TRIGGERED');
+    this.logEvent({ orderId: po.id, type: po.type, lot: po.lot, level: po.level, price: po.triggerPrice, event: 'PENDING_FILLED', reason: 'PRICE_REACHED_TRIGGER' });
+
+    this.placeNextPendingOrder(po.triggerPrice, po.side, po.level);
+
+    return position;
+  }
+
+  // Alias kompatibilitas (nama lama dipakai UI sebelumnya)
   checkHedgeTrigger(price) {
-    if (this.hedgePlaced || this.cycle.status === 'CLOSED' || !this.cycle.initialSide) return null;
-
-    const initialSide = this.cycle.initialSide;
-    const initialPositions = this.positions.filter(p => p.side === initialSide && p.status !== 'CLOSED');
-    if (!initialPositions.length) return null;
-
-    const refEntry = initialPositions[0].entryPrice;
-    const isAdverse = initialSide === 'BUY' ? price < refEntry : price > refEntry;
-    if (!isAdverse) return null;
-
-    const hedgeSide = initialSide === 'BUY' ? 'SELL' : 'BUY';
-    const hedgeLot = Math.min(this.config.hedgeLotSize, this.config.lotMax);
-
-    const hedgePosition = this.openPosition(hedgeSide, hedgeLot, price, 'HEDGE_ADVERSE_MOVE');
-    this.hedgePlaced = true;
-    this.cycle.recoveryCount += 1;
-    this.recoveryBudgetUsed += hedgeLot; // proxy sederhana; bisa diganti margin riil
-
-    this.logEvent({ orderId: hedgePosition.id, type: hedgeSide, lot: hedgeLot, price, event: 'HEDGE', reason: 'PRICE_MOVED_AGAINST_INITIAL_ENTRY' });
-    return hedgePosition;
+    return this.checkPendingOrders(price);
   }
 
   // ------------------------------------------------------------
@@ -221,9 +333,9 @@ class ABRSEngine {
   onPriceTick(price) {
     if (this.tradingDisabled) return;
 
-    this.checkHedgeTrigger(price);
+    this.checkPendingOrders(price);
     this.updateFloating(price);
-    this.checkGlobalRisk();
+    if (this.config.enableSafetyNet) this.checkGlobalRisk();
     this.checkBasketTarget();
   }
 
@@ -248,7 +360,8 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // BASKET TARGET & CLOSE RULE - Close All saat profit >= target tetap ($)
+  // BASKET TARGET & CLOSE RULE - Close All saat profit >= target
+  // (persentase equity, default 1%, atau override $ tetap)
   // ------------------------------------------------------------
   checkBasketTarget() {
     if (this.cycle.basketTarget == null || this.cycle.status === 'CLOSED') return;
@@ -264,6 +377,9 @@ class ABRSEngine {
         this.logEvent({ orderId: p.id, type: p.side, lot: p.lot, event: 'CLOSE', reason: `BASKET_${result}` });
       }
     }
+    if (this.pendingOrders.length) {
+      this.logEvent({ event: 'PENDING_DELETED', reason: `BASKET_${result}` });
+    }
     this.pendingOrders = [];
     this.cycle.endTime = Date.now();
     this.cycle.equityEnd = this.cycle.equityStart + this.cycle.basketProfit;
@@ -274,7 +390,8 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // GLOBAL RISK ENGINE (jaring pengaman, tetap berjalan)
+  // GLOBAL RISK ENGINE (proteksi tambahan / jaring pengaman opsional,
+  // di luar dokumen rules asli - lihat enableSafetyNet)
   // ------------------------------------------------------------
   // Dua jenjang proteksi:
   //  a) STOP LOSS bertingkat di basketStopLossPct x globalRiskBudget -> cycle
@@ -298,8 +415,8 @@ class ABRSEngine {
   }
 
   // ------------------------------------------------------------
-  // BOOTSTRAP CYCLE - entry pertama langsung (market), tanpa
-  // menunggu breakout range.
+  // BOOTSTRAP CYCLE - entry pertama langsung (market) di Level 1,
+  // lalu langsung memasang pending order lawan arah di Level 2.
   // ------------------------------------------------------------
   startCycle(tqiComponents, candles, atr, currentPrice) {
     if (this.tradingDisabled) {
@@ -313,15 +430,23 @@ class ABRSEngine {
     }
 
     const tqi = this.computeTQI(tqiComponents);
+    const filter = this.config.tqiTrendFilter;
+    if (filter && filter.enabled && tqi < filter.threshold) {
+      return { started: false, reason: 'TQI_BELOW_TREND_FILTER_THRESHOLD', tqi };
+    }
+
     this.cycle.tqiStart = tqi;
     this.cycle.marketMode = this.getMarketMode(tqi);
-    this.cycle.basketTarget = this.config.basketTargetUsd;
+    this.cycle.basketTarget = this.config.basketTargetUsd != null
+      ? this.config.basketTargetUsd
+      : this.cycle.equityStart * this.config.basketTargetPct;
 
     const direction = this.detectTrendDirection(candles);
     this.cycle.initialSide = direction;
     this.cycle.status = direction === 'BUY' ? 'BUY_ACTIVE' : 'SELL_ACTIVE';
 
-    this.openPosition(direction, this.config.lotStart, currentPrice, 'INITIAL_ENTRY');
+    this.openPosition(direction, this.lotTable[0], 1, currentPrice, 'INITIAL_ENTRY');
+    this.placeNextPendingOrder(currentPrice, direction, 1);
 
     return {
       started: true,
@@ -354,11 +479,9 @@ class ABRSEngine {
       positions: [...this.positions],
       pendingOrders: [...this.pendingOrders],
       events: this.exportEvents(),
+      lotTable: [...this.lotTable],
       risk: {
         globalRiskBudget: this.globalRiskBudget,
-        recoveryBudget: this.recoveryBudget,
-        recoveryBudgetUsed: this.recoveryBudgetUsed,
-        floatingBudget: this.floatingBudget,
         tradingDisabled: this.tradingDisabled
       }
     };
