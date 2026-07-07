@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS = {
   globalRiskPct: 0.15,
   basketStopLossPct: 0.6,
   enableSafetyNet: true,
-  lotStart: 0.01,            // Lot Level 1 (Initial Lot)
+  lotStart: 0.10,            // Lot Level 1 (Initial Lot)
   distancePoints: 300,       // Jarak antar level (point)
   pointSize: 0.01,           // Nilai harga 1 point (sesuaikan per instrumen)
   maxBuy: 10,
@@ -68,7 +68,7 @@ let lastCandles = [];
 let lastAtr = null;
 let lastTqiComponents = null;
 let lastRange = null; // { resistance, support, rangeWidth } dari cycle berjalan, untuk digambar di chart
-let lastKnownCycleId = engine.cycle.cycleId;
+let lastFlushedCycleId = null; // cycleId terakhir yang SUDAH tersimpan ke riwayat (trading_cycle) — null = belum ada
 let costsAccum = 0; // total biaya (komisi+spread) yang sudah dipotong pada cycle berjalan
 
 // ---------------------------------------------------------------
@@ -214,7 +214,12 @@ async function refreshCandlesAndMaybeStartCycle() {
     renderTQIOnly();
 
     if (engine.cycle.status === 'IDLE' || engine.cycle.status === 'CLOSED') {
-      if (engine.cycle.status === 'CLOSED') engine.startNewCycleAfterClose();
+      if (engine.cycle.status === 'CLOSED') {
+        // Jaring pengaman: pastikan cycle yang closed sudah ter-flush ke riwayat
+        // SEBELUM di-reset (data cycle lama hilang begitu resetCycle() dipanggil).
+        if (engine.cycle.cycleId !== lastFlushedCycleId) flushClosedCycle();
+        engine.startNewCycleAfterClose();
+      }
       costsAccum = 0;
       lastRange = null;
       const entryPrice = candles.at(-1).close;
@@ -271,7 +276,7 @@ function handleTick(price) {
 
   pullEventsToLog();
 
-  if (engine.cycle.cycleId !== lastKnownCycleId && engine.cycle.status === 'CLOSED') {
+  if (engine.cycle.status === 'CLOSED' && engine.cycle.cycleId !== lastFlushedCycleId) {
     flushClosedCycle();
   }
 }
@@ -299,7 +304,7 @@ function pullEventsToLog() {
 function flushClosedCycle() {
   history.push(engine.exportCycleRecord());
   saveHistory();
-  lastKnownCycleId = engine.cycle.cycleId;
+  lastFlushedCycleId = engine.cycle.cycleId;
 }
 
 // ---------------------------------------------------------------
@@ -836,7 +841,7 @@ el.settingsForm.addEventListener('submit', e => {
   saveSettings();
 
   engine = new ABRSEngine(buildEngineConfig(settings));
-  lastKnownCycleId = engine.cycle.cycleId;
+  lastFlushedCycleId = null;
   costsAccum = 0;
   lastTqiComponents = null;
 
@@ -861,6 +866,43 @@ $('btnExportEvents').addEventListener('click', () => {
   a.href = url; a.download = `gusera-sats-trade-events-${Date.now()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+});
+
+$('btnImportHeadless').addEventListener('click', () => {
+  const fileInput = $('cfgImportHeadlessFile');
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) { alert('Pilih dulu file headless-store.json yang dihasilkan headless-runner.js.'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try { data = JSON.parse(reader.result); }
+    catch (e) { alert('File bukan JSON valid: ' + e.message); return; }
+
+    const importedHistory = Array.isArray(data.history) ? data.history : [];
+    const importedEvents = Array.isArray(data.events) ? data.events : [];
+
+    const existingCycleIds = new Set(history.map(h => h.cycleId));
+    let addedCycles = 0;
+    for (const h of importedHistory) {
+      if (h.cycleId && !existingCycleIds.has(h.cycleId)) { history.push(h); existingCycleIds.add(h.cycleId); addedCycles++; }
+    }
+    history.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+
+    const existingEventKeys = new Set(eventLog.map(e => e.cycleId + '|' + e.timestamp + '|' + e.event + '|' + (e.orderId || '')));
+    let addedEvents = 0;
+    for (const e of importedEvents) {
+      const key = e.cycleId + '|' + e.timestamp + '|' + e.event + '|' + (e.orderId || '');
+      if (!existingEventKeys.has(key)) { eventLog.push(e); existingEventKeys.add(key); addedEvents++; }
+    }
+    eventLog.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+    saveHistory(); saveEvents();
+    renderAll();
+    fileInput.value = '';
+    alert(`Import selesai: ${addedCycles} cycle baru, ${addedEvents} event baru ditambahkan ke riwayat.`);
+  };
+  reader.onerror = () => alert('Gagal membaca file.');
+  reader.readAsText(file);
 });
 
 // ---------------------------------------------------------------

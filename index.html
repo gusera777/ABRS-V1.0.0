@@ -367,6 +367,21 @@
         </div>
       </div>
 
+      <div class="form-section">
+        <h3>Headless Runner (jalan tanpa app dibuka)</h3>
+        <span class="field-hint">
+          Aplikasi ini murni client-side — begitu tab/browser ditutup, semua proses berhenti.
+          Untuk sistem yang tetap trading walau app tidak dibuka, jalankan <code>node headless-runner.js</code>
+          di komputer/server yang tetap menyala (lihat README). Riwayat cycle & event yang dihasilkannya
+          tersimpan di file <code>headless-store.json</code> — impor file itu di sini untuk digabung ke
+          dashboard ini kapan saja.
+        </span>
+        <div class="flex" style="gap:8px;margin-top:8px;align-items:center">
+          <input type="file" id="cfgImportHeadlessFile" accept="application/json" style="flex:1">
+          <button type="button" class="btn" id="btnImportHeadless">Import</button>
+        </div>
+      </div>
+
       <div class="modal-footer">
         <button type="button" class="btn btn-danger" id="btnResetHistory">Reset Riwayat</button>
         <button type="button" class="btn" id="btnCancelSettings">Batal</button>

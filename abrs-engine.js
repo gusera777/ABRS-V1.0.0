@@ -18,7 +18,7 @@
  *  RULE ENTRY (v2.0 - Basket Hedging + Reverse Martingale):
  *  ------------------------------------------------------------
  *  1. Begitu cycle dimulai, EA langsung membuka entry pertama
- *     (market) dengan lot Level 1 (default 0.01). Arah (BUY/SELL)
+ *     (market) dengan lot Level 1 (default 0.10). Arah (BUY/SELL)
  *     ditentukan oleh arah trend jangka pendek (SMA cepat vs SMA
  *     lambat), atau opsional digerbang oleh filter TQI (lihat
  *     `tqiTrendFilter`).
@@ -26,8 +26,8 @@
  *  2. Begitu entry pertama terbuka, EA langsung memasang SATU
  *     pending order lawan arah pada jarak tetap (`distancePoints`
  *     x `pointSize`) dari harga entry, dengan lot Level berikutnya
- *     dari Tabel Lot progresif (0.01, 0.03, 0.06, 0.12, 0.24, 0.48,
- *     0.96, 1.92, 3.84, 7.68 - x3 di level 2, x2 setiap level
+ *     dari Tabel Lot progresif (0.10, 0.30, 0.60, 1.20, 2.40, 4.80,
+ *     9.60, 19.20, 38.40, 76.80 - x3 di level 2, x2 setiap level
  *     berikutnya).
  *
  *  3. Setiap kali pending order tersentuh (triggered), EA:
@@ -82,9 +82,9 @@ class ABRSEngine {
       enableSafetyNet: config.enableSafetyNet ?? true,    // matikan jika ingin murni mengikuti dokumen rules (tanpa stoploss $)
 
       // --- Tabel Lot Progresif ---
-      initialLot: config.initialLot ?? config.lotStart ?? 0.01, // lot Level 1
+      initialLot: config.initialLot ?? config.lotStart ?? 0.10, // lot Level 1
       // Multiplier relatif terhadap initialLot untuk Level 1..10.
-      // Default menghasilkan 0.01, 0.03, 0.06, 0.12, 0.24, 0.48, 0.96, 1.92, 3.84, 7.68
+      // Default (initialLot 0.10) menghasilkan 0.10, 0.30, 0.60, 1.20, 2.40, 4.80, 9.60, 19.20, 38.40, 76.80
       // (x3 dari Level 1 ke Level 2, lalu x2 setiap level berikutnya) - sesuai tabel lot dokumen.
       lotMultipliers: config.lotMultipliers ?? [1, 3, 6, 12, 24, 48, 96, 192, 384, 768],
 
@@ -220,7 +220,7 @@ class ABRSEngine {
   // ENTRY ENGINE - membuka posisi. `level` = step ke berapa dalam
   // urutan alternating global (1 = entry pertama, 2 = pending
   // pertama yang triggered, dst) - dipakai untuk mengindeks Tabel
-  // Lot (0.01, 0.03, 0.06, 0.12, ...), BUKAN hitungan per sisi.
+  // Lot (0.10, 0.30, 0.60, 1.20, ...), BUKAN hitungan per sisi.
   // ------------------------------------------------------------
   openPosition(side, lot, level, price, reason) {
     const position = {

@@ -238,6 +238,9 @@ const SyntheticFeed = {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { TwelveDataFeed, MarketAnalytics, SyntheticFeed };
+}
 if (typeof window !== 'undefined') {
   window.TwelveDataFeed = TwelveDataFeed;
   window.MarketAnalytics = MarketAnalytics;

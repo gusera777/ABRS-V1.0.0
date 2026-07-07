@@ -32,7 +32,7 @@ python3 -m http.server 8080
 Entry ABRS sekarang mengikuti rules **Basket Hedging + Reverse Martingale**: entry pertama market, lalu basket dibangun lewat pending order yang saling berselang-seling (alternating BUY_STOP / SELL_STOP) dengan lot progresif.
 
 1. **Entry pertama**: begitu cycle dimulai, sistem langsung buka posisi Level 1 dengan lot **Initial Lot** (default 0.01) — arahnya (BUY/SELL) mengikuti trend jangka pendek (SMA cepat vs SMA lambat dari candle terbaru). Opsional: filter TQI (`tqiTrendFilter`) bisa mewajibkan TQI ≥ threshold (default 70) sebelum cycle boleh mulai.
-2. **Pending order lawan arah**: segera setelah entry pertama, sistem memasang **satu** pending order di sisi berlawanan, pada jarak tetap **Distance** (default 300 point × Point Size) dari harga entry, dengan lot Level berikutnya dari **Tabel Lot progresif**: 0.01, 0.03, 0.06, 0.12, 0.24, 0.48, 0.96, 1.92, 3.84, 7.68 (×3 dari Level 1→2, lalu ×2 tiap level berikutnya). Contoh: BUY 0.01 → pasang SELL_STOP 0.03. Sebaliknya: SELL 0.01 → pasang BUY_STOP 0.03.
+2. **Pending order lawan arah**: segera setelah entry pertama, sistem memasang **satu** pending order di sisi berlawanan, pada jarak tetap **Distance** (default 300 point × Point Size) dari harga entry, dengan lot Level berikutnya dari **Tabel Lot progresif**: 0.10, 0.30, 0.60, 1.20, 2.40, 4.80, 9.60, 19.20, 38.40, 76.80 (×3 dari Level 1→2, lalu ×2 tiap level berikutnya). Contoh: BUY 0.10 → pasang SELL_STOP 0.30. Sebaliknya: SELL 0.10 → pasang BUY_STOP 0.30. **Perhatian**: dengan Initial Lot 0.10, lot di Level 10 mencapai 76.80 — pastikan ukuran ini sesuai kapasitas modal/akun sebelum dipakai live, karena strategi ini pada dasarnya tidak membatasi rugi sendiri (lihat poin 6).
 3. **Siklus alternating**: setiap kali pending order tersentuh, posisi baru terbuka, pending lama dihapus, dan pending baru lawan arah dipasang di level berikutnya (BUY → SELL → BUY → SELL → ...) hingga salah satu sisi mencapai batas maksimum. EA hanya pernah punya **1 pending order aktif** setiap saat.
 4. **Batas posisi**: Max BUY (default 10), Max SELL (default 10), Max Total (20). Begitu satu sisi mencapai batasnya, EA berhenti memasang pending baru di sisi itu dan hanya mengelola basket yang ada. Level di atas 10 (bisa terjadi karena Max BUY+SELL sampai 20) memakai lot Level 10 (7.68) karena Tabel Lot hanya mendefinisikan 10 level.
 5. **Close All**: begitu total floating profit basket (BUY+SELL) mencapai target — default **1% Equity** (bisa diubah di Pengaturan → "Target Profit Basket (% Equity)"), seluruh posisi ditutup sekaligus, pending order dihapus, dan basket reset ke Level 1.
@@ -42,7 +42,7 @@ Initial Lot, Distance, Point Size, Max BUY/SELL, dan Target Profit (% Equity) se
 
 ## Perubahan di Versi Ini — v2.0 (Basket Hedging + Reverse Martingale)
 
-- **Logic entry diganti total**: dari hedge tunggal (1x lot tetap) di v1.3, menjadi basket ladder alternating BUY_STOP/SELL_STOP dengan Tabel Lot progresif (0.01 → 7.68 di 10 level), sesuai dokumen rules "Basket Hedging + Reverse Martingale V2.0". Lihat bagian **Rule Entry (v2.0)** di atas untuk detail.
+- **Logic entry diganti total**: dari hedge tunggal (1x lot tetap) di v1.3, menjadi basket ladder alternating BUY_STOP/SELL_STOP dengan Tabel Lot progresif (0.10 → 76.80 di 10 level, Initial Lot 0.10), sesuai dokumen rules "Basket Hedging + Reverse Martingale V2.0". Lihat bagian **Rule Entry (v2.0)** di atas untuk detail.
 - **Target profit** kini berbasis **% Equity** (default 1%), bukan nilai $ tetap seperti sebelumnya (opsi override $ tetap masih tersedia via `basketTargetUsd` di kode jika dibutuhkan).
 - **Batas posisi eksplisit**: Max BUY, Max SELL (masing-masing default 10, bisa diatur 1-10) dan Max Total (20) — begitu tercapai, EA berhenti memasang pending baru di sisi tsb.
 - **Jaring pengaman (Stop Loss bertingkat & EMERGENCY)** kini bisa dimatikan lewat toggle "Aktifkan Jaring Pengaman" di Pengaturan, untuk yang ingin murni mengikuti dokumen rules tanpa proteksi $ tambahan. Default tetap aktif karena strategi ini pada dasarnya tidak membatasi rugi sendiri.
@@ -54,6 +54,26 @@ Initial Lot, Distance, Point Size, Max BUY/SELL, dan Target Profit (% Equity) se
 - **Stop Loss bertingkat** (`basketStopLossPct` di `abrs-engine.js`): sebelumnya cycle yang kalah hanya bisa berakhir `EMERGENCY` (rugi penuh 100% Global Risk Budget) — status `LOSS` disebut di komentar & di semua kode UI/statistik tapi TIDAK PERNAH benar-benar terjadi. Sekarang cycle bisa ditutup `LOSS` lebih awal (default di 60% Global Risk Budget) sebelum menyentuh EMERGENCY, membatasi kerugian per cycle.
 - **Default risiko diturunkan**: `globalRiskPct` 0.5 → 0.15, `lotMax` 0.50 → 0.20, `recoveryBudgetSplit` 0.4 → 0.35. Default lama (boleh floating rugi 50% modal) terlalu agresif untuk sistem yang menargetkan profit konsisten. Tetap bisa diubah manual di Pengaturan.
 - **API key Twelve Data tidak lagi hardcode** di `DEFAULT_SETTINGS.apiKey` — sebelumnya key pribadi tertanam di source, isu privasi/keamanan. Sekarang kosong, wajib diisi manual di modal Pengaturan.
+
+## Menjalankan Tanpa Aplikasi Dibuka (Headless Runner)
+
+Aplikasi browser ini **murni client-side** — begitu tab/browser ditutup, seluruh JavaScript-nya berhenti total. Ini batasan sandboxing browser, bukan sesuatu yang bisa diperbaiki lewat kode apa pun di dalam `app.js`/`index.html`.
+
+Untuk sistem yang tetap trading walau aplikasi tidak dibuka, `headless-runner.js` menjalankan `ABRSEngine` + price feed yang sama sebagai **proses Node.js terpisah**, independen dari browser:
+
+```bash
+node headless-runner.js
+```
+
+- Saat pertama dijalankan, file `headless-config.json` dibuat otomatis (mode demo, tanpa API key). Edit isinya (symbol, API key Twelve Data, parameter risk/lot, dst) lalu jalankan ulang untuk mode live.
+- Supaya tetap berjalan setelah terminal ditutup / komputer restart, pakai process manager, mis. `pm2 start headless-runner.js --name abrs`, atau daftarkan sebagai systemd service / scheduled task. **Catatan**: proses ini sendiri tetap butuh komputer/server yang menyala — tidak ada cara membuat kode berjalan tanpa ada proses apa pun yang mengeksekusinya.
+- Riwayat cycle & event otomatis tersimpan ke `headless-store.json` di folder yang sama.
+- Buka `index.html` kapan saja, di modal Pengaturan bagian **"Headless Runner"**, pilih file `headless-store.json` tersebut lalu klik **Import** — riwayat trading yang terjadi selagi aplikasi tidak dibuka akan digabung ke dashboard (tanpa duplikat, dicek lewat `cycleId`).
+
+## Bug yang Diperbaiki (Evaluasi Kode)
+
+- **Cycle closed tidak pernah masuk riwayat (`trading_cycle`)** — bug kritis di `app.js`: variabel penanda "cycle terakhir yang sudah disimpan" (`lastKnownCycleId`) diinisialisasi dengan cycleId cycle yang SEDANG berjalan, dan kondisi flush membandingkan `cycleId !== lastKnownCycleId`. Karena `cycleId` baru berubah saat `resetCycle()` dipanggil (setelah cycle closed), sementara flush dicek SEBELUM reset terjadi, kondisi ini tidak pernah bernilai true dalam alur normal — akibatnya `history` (tabel `trading_cycle`) tidak pernah bertambah, walau cycle sudah closed berkali-kali. Sekarang diganti dengan `lastFlushedCycleId` (mulai dari `null`) yang di-set hanya setelah benar-benar berhasil di-flush, plus flush pengaman tambahan sebelum `startNewCycleAfterClose()` dipanggil.
+- **Lot progresif**: default Initial Lot diubah dari 0.01 menjadi 0.10, sehingga Tabel Lot Level 1-10 menjadi 0.10, 0.30, 0.60, 1.20, 2.40, 4.80, 9.60, 19.20, 38.40, 76.80 (mengikuti progresi ×3 lalu ×2 yang sama seperti sebelumnya). **Perhatian**: lot di level tinggi jadi jauh lebih besar (76.80 di Level 10) — sesuaikan dengan kapasitas modal/akun Anda.
 
 ## Rekomendasi Lanjutan (belum diimplementasikan, perlu keputusan/waktu lebih)
 

@@ -1,0 +1,32 @@
+{
+  "_comment": "Salin file ini menjadi headless-config.json lalu sesuaikan nilainya. File headless-config.json (tanpa .example) akan dibuat otomatis dengan nilai default bila belum ada saat headless-runner.js pertama kali dijalankan.",
+  "demo": true,
+  "apiKey": "",
+  "symbol": "XAU/USD",
+  "interval": "5min",
+  "capital": 10000,
+  "globalRiskPct": 0.15,
+  "basketStopLossPct": 0.6,
+  "enableSafetyNet": true,
+  "lotStart": 0.10,
+  "distancePoints": 300,
+  "pointSize": 0.01,
+  "maxBuy": 10,
+  "maxSell": 10,
+  "basketTargetPct": 0.01,
+  "spreadPips": 2,
+  "commissionPerLot": 3.5,
+  "swapPerTick": 0,
+  "pipValue": 1,
+  "tqiWeights": {
+    "trendStrength": 0.25,
+    "marketStructure": 0.20,
+    "volatility": 0.15,
+    "breakoutQuality": 0.15,
+    "volume": 0.10,
+    "spread": 0.05,
+    "momentum": 0.10
+  },
+  "quotePollMs": 10000,
+  "candlePollMs": 60000
+}
