@@ -20,12 +20,13 @@ const LS_EVENTS   = 'gusera_sats_events_v1';
 
 const DEFAULT_SETTINGS = {
   capital: 10000,
-  apiKey: '17b2bb1a7191434d989bc757ea699f33',
-  globalRiskPct: 0.5,
-  recoveryBudgetSplit: 0.4,
+  apiKey: '', // JANGAN hardcode API key pribadi di source — isi lewat modal Pengaturan, tersimpan hanya di localStorage
+  globalRiskPct: 0.15,
+  recoveryBudgetSplit: 0.35,
+  basketStopLossPct: 0.6,
   lotStart: 0.01,
   lotStep: 0.01,
-  lotMax: 0.50,
+  lotMax: 0.20,
   rangeLookback: 20,
   spreadPips: 2,
   commissionPerLot: 3.5,
@@ -64,6 +65,7 @@ let candleTimer = null;
 let lastCandles = [];
 let lastAtr = null;
 let lastTqiComponents = null;
+let lastRange = null; // { resistance, support, rangeWidth } dari cycle berjalan, untuk digambar di chart
 let lastKnownCycleId = engine.cycle.cycleId;
 let costsAccum = 0; // total biaya (komisi+spread) yang sudah dipotong pada cycle berjalan
 
@@ -100,6 +102,7 @@ function buildEngineConfig(s) {
     capital: s.capital,
     globalRiskPct: s.globalRiskPct,
     recoveryBudgetSplit: s.recoveryBudgetSplit,
+    basketStopLossPct: s.basketStopLossPct,
     lotStart: s.lotStart,
     lotStep: s.lotStep,
     lotMax: s.lotMax,
@@ -213,8 +216,10 @@ async function refreshCandlesAndMaybeStartCycle() {
       pullEventsToLog();
       if (!result.started) {
         setFeedStatus('paused', `MENUNGGU RANGE (${result.reason})`);
+        lastRange = null;
       } else {
         setFeedStatus('live', 'FEED LIVE');
+        lastRange = result.range;
       }
     }
     renderAll();
@@ -306,6 +311,7 @@ function flushClosedCycle() {
 function renderAll() {
   renderBasket();
   renderTQIOnly();
+  renderPriceChart();
   renderStats();
   renderPositions();
   renderRiskSummary();
@@ -319,7 +325,7 @@ function renderAll() {
 function renderBasket() {
   const c = engine.cycle;
   el.cycleStatusBadge.textContent = c.status;
-  el.cycleStatusBadge.className = 'badge ' + (c.status === 'CLOSED' ? (c.result === 'WIN' ? 'badge-pos' : 'badge-neg') : 'badge-gold');
+  el.cycleStatusBadge.className = 'badge ' + (c.status === 'CLOSED' ? (c.result === 'WIN' ? 'badge-pos' : (c.result === 'EMERGENCY' ? 'badge-gold' : 'badge-neg')) : 'badge-gold');
   el.cycleIdShort.textContent = shortId(c.cycleId);
 
   const pnl = c.basketProfit || 0;
@@ -370,6 +376,141 @@ function renderTQIOnly() {
     </div>`;
   }).join('');
 }
+
+// ---------------------------------------------------------------
+// PRICE CHART (candlestick ringan, canvas 2D, tanpa library luar)
+// Menampilkan: candle harga, garis Resistance/Support (range aktif),
+// level Pending Order (BUY_STOP/SELL_STOP), dan marker ENTRY tiap posisi
+// (segitiga hijau = BUY, merah = SELL; outline abu-abu = LOCKED).
+// ---------------------------------------------------------------
+function renderPriceChart() {
+  const canvas = $('priceChart');
+  if (!canvas) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
+  const cssH = canvas.clientHeight || 260;
+  if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  if (!lastCandles.length) {
+    ctx.fillStyle = '#565d68';
+    ctx.font = '12px monospace';
+    ctx.fillText('Menunggu data candle… mulai feed untuk melihat grafik.', 14, cssH / 2);
+    return;
+  }
+
+  const candles = lastCandles.slice(-90);
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  let maxP = Math.max(...highs);
+  let minP = Math.min(...lows);
+
+  const activePositions = engine.positions.filter(p => p.status !== 'CLOSED');
+  const overlayPrices = [];
+  if (lastRange) overlayPrices.push(lastRange.resistance, lastRange.support);
+  engine.pendingOrders.forEach(po => overlayPrices.push(po.triggerPrice));
+  activePositions.forEach(p => overlayPrices.push(p.entryPrice));
+  overlayPrices.forEach(p => { if (p > maxP) maxP = p; if (p < minP) minP = p; });
+
+  const pad = (maxP - minP) * 0.10 || maxP * 0.001 || 1;
+  maxP += pad; minP -= pad;
+
+  const padLeft = 58, padRight = 12, padTop = 10, padBottom = 8;
+  const w = Math.max(10, cssW - padLeft - padRight);
+  const h = Math.max(10, cssH - padTop - padBottom);
+  const xAt = i => padLeft + (candles.length > 1 ? (i / (candles.length - 1)) * w : w / 2);
+  const yAt = p => padTop + (1 - (p - minP) / ((maxP - minP) || 1)) * h;
+  const decimals = maxP >= 100 ? 2 : (maxP >= 1 ? 4 : 5);
+
+  // grid horizontal + label harga
+  ctx.font = '10px var(--font-mono, monospace)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.fillStyle = '#565d68';
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const p = minP + (maxP - minP) * i / steps;
+    const y = yAt(p);
+    ctx.beginPath(); ctx.moveTo(padLeft, y); ctx.lineTo(cssW - padRight, y); ctx.stroke();
+    ctx.fillText(p.toFixed(decimals), 2, y + 3);
+  }
+
+  // candlesticks
+  const cw = Math.max(1.5, (w / candles.length) * 0.55);
+  candles.forEach((c, i) => {
+    const x = xAt(i);
+    const up = c.close >= c.open;
+    ctx.strokeStyle = up ? 'var(--positive, #3ecf8e)' : 'var(--negative, #ff5c5c)';
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, yAt(c.high)); ctx.lineTo(x, yAt(c.low)); ctx.stroke();
+    const yO = yAt(c.open), yC = yAt(c.close);
+    ctx.fillRect(x - cw / 2, Math.min(yO, yC), cw, Math.max(1, Math.abs(yC - yO)));
+  });
+
+  // garis Resistance / Support dari range aktif
+  if (lastRange) {
+    drawDashedHLine(ctx, yAt(lastRange.resistance), padLeft, cssW - padRight, '#f2a93b');
+    drawDashedHLine(ctx, yAt(lastRange.support), padLeft, cssW - padRight, '#f2a93b');
+    ctx.fillStyle = '#f2a93b';
+    ctx.fillText('Resistance', cssW - padRight - 62, yAt(lastRange.resistance) - 3);
+    ctx.fillText('Support', cssW - padRight - 62, yAt(lastRange.support) + 11);
+  }
+
+  // level pending order
+  engine.pendingOrders.forEach(po => {
+    const y = yAt(po.triggerPrice);
+    const color = po.side === 'BUY' ? 'rgba(62,207,142,0.55)' : 'rgba(255,92,92,0.55)';
+    drawDashedHLine(ctx, y, padLeft, cssW - padRight, color);
+  });
+
+  // marker ENTRY untuk tiap posisi (aktif & terkunci)
+  const times = candles.map(c => new Date(c.time).getTime());
+  activePositions.forEach(p => {
+    let idx = times.length - 1, best = Infinity;
+    for (let i = 0; i < times.length; i++) {
+      const d = Math.abs(times[i] - p.openTime);
+      if (d < best) { best = d; idx = i; }
+    }
+    const x = xAt(idx);
+    const y = yAt(p.entryPrice);
+    ctx.fillStyle = p.side === 'BUY' ? 'var(--positive, #3ecf8e)' : 'var(--negative, #ff5c5c)';
+    ctx.beginPath();
+    if (p.side === 'BUY') { ctx.moveTo(x, y - 8); ctx.lineTo(x - 6, y + 4); ctx.lineTo(x + 6, y + 4); }
+    else { ctx.moveTo(x, y + 8); ctx.lineTo(x - 6, y - 4); ctx.lineTo(x + 6, y - 4); }
+    ctx.closePath(); ctx.fill();
+    if (p.status === 'LOCKED') {
+      ctx.strokeStyle = '#909aa8'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.fillStyle = '#e9e7e2';
+    ctx.font = '9px var(--font-mono, monospace)';
+    ctx.fillText(`${p.lot.toFixed(2)}`, x + 8, y + 3);
+  });
+
+  // garis harga saat ini
+  const lastClose = candles.at(-1).close;
+  const yLast = yAt(lastClose);
+  drawDashedHLine(ctx, yLast, padLeft, cssW - padRight, '#e9e7e2');
+  ctx.fillStyle = '#e9e7e2';
+  ctx.font = '10px var(--font-mono, monospace)';
+  ctx.fillText(lastClose.toFixed(decimals), cssW - padRight - 46, yLast - 4);
+}
+
+function drawDashedHLine(ctx, y, x1, x2, color) {
+  ctx.save();
+  ctx.setLineDash([5, 3]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y); ctx.stroke();
+  ctx.restore();
+}
+
+window.addEventListener('resize', () => { if (lastCandles.length) renderPriceChart(); });
 
 function renderStats() {
   const closed = history.filter(h => h.result);
@@ -633,6 +774,7 @@ function openSettings() {
   $('cfgApiKey').value = settings.apiKey;
   $('cfgGlobalRisk').value = settings.globalRiskPct;
   $('cfgRecoverySplit').value = settings.recoveryBudgetSplit;
+  $('cfgStopLoss').value = settings.basketStopLossPct;
   $('cfgLotStart').value = settings.lotStart;
   $('cfgLotStep').value = settings.lotStep;
   $('cfgLotMax').value = settings.lotMax;
@@ -669,6 +811,7 @@ el.settingsForm.addEventListener('submit', e => {
     apiKey: $('cfgApiKey').value.trim(),
     globalRiskPct: parseFloat($('cfgGlobalRisk').value) || DEFAULT_SETTINGS.globalRiskPct,
     recoveryBudgetSplit: parseFloat($('cfgRecoverySplit').value) || DEFAULT_SETTINGS.recoveryBudgetSplit,
+    basketStopLossPct: parseFloat($('cfgStopLoss').value) || DEFAULT_SETTINGS.basketStopLossPct,
     lotStart: parseFloat($('cfgLotStart').value) || DEFAULT_SETTINGS.lotStart,
     lotStep: parseFloat($('cfgLotStep').value) || DEFAULT_SETTINGS.lotStep,
     lotMax: parseFloat($('cfgLotMax').value) || DEFAULT_SETTINGS.lotMax,

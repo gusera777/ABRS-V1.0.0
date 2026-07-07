@@ -28,11 +28,12 @@ class ABRSEngine {
   constructor(config = {}) {
     this.config = {
       capital: config.capital ?? 10000,
-      globalRiskPct: config.globalRiskPct ?? 0.5,       // 50% dari modal
-      recoveryBudgetSplit: config.recoveryBudgetSplit ?? 0.4, // porsi recovery dari global risk (contoh: 2000/5000 = 0.4)
+      globalRiskPct: config.globalRiskPct ?? 0.15,      // 15% dari modal (default lebih konservatif dari versi awal 50%)
+      recoveryBudgetSplit: config.recoveryBudgetSplit ?? 0.35, // porsi recovery dari global risk
+      basketStopLossPct: config.basketStopLossPct ?? 0.6, // cycle ditutup 'LOSS' saat basketProfit <= -(globalRiskBudget * pct), sebelum menyentuh EMERGENCY penuh
       lotStart: config.lotStart ?? 0.01,
       lotStep: config.lotStep ?? 0.01,
-      lotMax: config.lotMax ?? 0.50,
+      lotMax: config.lotMax ?? 0.20,
       rangeLookback: config.rangeLookback ?? 20,
       atrMinRangeMultiplier: config.atrMinRangeMultiplier ?? 1.5, // lebar range minimum = ATR x multiplier
       atrOffsetMultiplier: config.atrOffsetMultiplier ?? 0.25,   // offset pending order dari S/R
@@ -345,12 +346,24 @@ class ABRSEngine {
   // ------------------------------------------------------------
   // 14. GLOBAL RISK ENGINE
   // ------------------------------------------------------------
+  // Dua jenjang proteksi:
+  //  a) STOP LOSS bertingkat di basketStopLossPct x globalRiskBudget -> cycle
+  //     ditutup 'LOSS' (kerugian dibatasi lebih awal, trading TIDAK dihentikan,
+  //     cycle berikutnya bisa mulai normal).
+  //  b) EMERGENCY di 100% globalRiskBudget -> circuit breaker keras, trading
+  //     dihentikan (tradingDisabled) sampai user reset/mulai ulang.
   checkGlobalRisk() {
     if (this.cycle.status === 'CLOSED') return;
+
+    const stopLossLevel = this.globalRiskBudget * this.config.basketStopLossPct;
+
     if (this.cycle.basketProfit <= -this.globalRiskBudget) {
       this.tradingDisabled = true;
       this.closeBasket('EMERGENCY');
       this.logEvent({ event: 'EMERGENCY_CLOSE', reason: 'GLOBAL_RISK_LIMIT_HIT' });
+    } else if (this.cycle.basketProfit <= -stopLossLevel) {
+      this.closeBasket('LOSS');
+      this.logEvent({ event: 'STOP_LOSS_CLOSE', reason: 'BASKET_STOP_LOSS_LEVEL_HIT' });
     }
   }
 

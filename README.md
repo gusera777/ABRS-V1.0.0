@@ -27,6 +27,23 @@ python3 -m http.server 8080
 | `style.css` | Desain "ledger/block" — tiap trading cycle divisualisasikan seperti blok dengan hash-id & rantai riwayat. |
 | `index.html` | Struktur halaman. |
 
+## Perubahan di Versi Ini (Evaluasi & Perbaikan)
+
+- **Grafik harga + marker Entry** (`priceChart` canvas di `app.js`/`index.html`): candle, garis Resistance/Support, level Pending Order, dan segitiga Entry (hijau=BUY, merah=SELL, outline abu=LOCKED) — murni canvas 2D, tanpa library luar.
+- **Stop Loss bertingkat** (`basketStopLossPct` di `abrs-engine.js`): sebelumnya cycle yang kalah hanya bisa berakhir `EMERGENCY` (rugi penuh 100% Global Risk Budget) — status `LOSS` disebut di komentar & di semua kode UI/statistik tapi TIDAK PERNAH benar-benar terjadi. Sekarang cycle bisa ditutup `LOSS` lebih awal (default di 60% Global Risk Budget) sebelum menyentuh EMERGENCY, membatasi kerugian per cycle.
+- **Default risiko diturunkan**: `globalRiskPct` 0.5 → 0.15, `lotMax` 0.50 → 0.20, `recoveryBudgetSplit` 0.4 → 0.35. Default lama (boleh floating rugi 50% modal) terlalu agresif untuk sistem yang menargetkan profit konsisten. Tetap bisa diubah manual di Pengaturan.
+- **API key Twelve Data tidak lagi hardcode** di `DEFAULT_SETTINGS.apiKey` — sebelumnya key pribadi tertanam di source, isu privasi/keamanan. Sekarang kosong, wajib diisi manual di modal Pengaturan.
+
+## Rekomendasi Lanjutan (belum diimplementasikan, perlu keputusan/waktu lebih)
+
+1. **Backtest engine**: replay `ABRSEngine` yang sama atas data historis OHLC untuk mengukur win rate/profit factor/max drawdown riil sebelum dipakai live — saat ini nol validasi historis.
+2. **PnL & pip value per-instrumen**: `pipValue` global di Settings dipakai sama untuk XAU/USD, BTC/USD, EUR/USD, US30/USD — padahal nilai kontrak/pip masing-masing jauh berbeda; sebaiknya per-simbol.
+3. **Recovery budget berbasis $ risiko**, bukan proxy jumlah lot (`recoveryBudgetUsed += nextLot`), supaya konsisten dengan `globalRiskBudget`/`floatingBudget` yang berbasis $.
+4. **Kedaluwarsa pending order**: level BUY_STOP/SELL_STOP tidak diperbarui walau range bergeser seiring waktu; pertimbangkan re-evaluasi/pembatalan otomatis.
+5. **Diversifikasi**: satu instance engine = satu simbol pada satu waktu; risiko terkonsentrasi.
+
+Catatan strategi (penting): ABRS pada intinya adalah pola breakout dua arah + kunci posisi lawan + ladder recovery (mirip martingale terbatas lot). Pola ini bisa terlihat "konsisten profit" pada histori pendek/kondisi normal, tapi punya risiko ekor (tail risk) saat market trending kuat searah tanpa reversal — kerugian besar bisa terjadi sekali waktu meski frekuensinya jarang. Tidak ada kombinasi parameter yang menghilangkan risiko ini sepenuhnya; yang bisa dilakukan adalah membatasinya (stop loss bertingkat, lot max lebih kecil, global risk lebih kecil) dan memvalidasinya lewat backtest sebelum live.
+
 ## Catatan Penting
 
 - **Biaya transaksi**: spread & komisi diterapkan sebagai deduksi nyata ke `basketProfit` tiap posisi baru dibuka (lihat `applyEntryCosts` di `app.js`) — bukan sekadar tampilan.

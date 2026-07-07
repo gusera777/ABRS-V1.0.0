@@ -110,6 +110,23 @@
     </div>
   </div>
 
+  <!-- ===================== ROW 1.5: Price Chart + Entry ===================== -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-head">
+      <h2>🕯️ Grafik Harga &amp; Entry</h2>
+      <span class="eyebrow">CANDLE + LEVEL RANGE/PENDING + MARKER ENTRY</span>
+    </div>
+    <canvas id="priceChart" style="width:100%; height:260px; display:block"></canvas>
+    <div class="flex gap-8 mt-8" style="flex-wrap:wrap;font-size:11.5px;color:var(--text-secondary)">
+      <span>▲ Entry BUY</span>
+      <span>▼ Entry SELL</span>
+      <span>◻ Outline abu = LOCKED</span>
+      <span>┅ kuning = Resistance/Support</span>
+      <span>┅ hijau/merah pudar = Pending Order</span>
+      <span>┅ putih = Harga saat ini</span>
+    </div>
+  </div>
+
   <!-- ===================== ROW 2: Performance stats ===================== -->
   <div class="card" style="margin-bottom:18px">
     <div class="card-head">
@@ -268,6 +285,11 @@
           <div class="field">
             <label>Porsi Recovery dari Global Risk</label>
             <input type="number" id="cfgRecoverySplit" step="0.01" min="0" max="1">
+          </div>
+          <div class="field">
+            <label>Stop Loss Basket (% dari Global Risk)</label>
+            <input type="number" id="cfgStopLoss" step="0.01" min="0.1" max="1">
+            <span class="field-hint">Cycle ditutup 'LOSS' lebih awal di level ini, sebelum menyentuh 100% Global Risk (EMERGENCY).</span>
           </div>
           <div class="field">
             <label>Lot Awal</label>
