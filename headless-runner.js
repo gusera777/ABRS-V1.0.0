@@ -61,6 +61,9 @@ const DEFAULT_CONFIG = {
   maxBuy: 10,
   maxSell: 10,
   basketTargetPct: 0.01,
+  enableProfitLock: true,
+  profitLockActivateUsd: 50,
+  profitLockValueUsd: 30,
   spreadPips: 2,
   commissionPerLot: 3.5,
   swapPerTick: 0,
@@ -133,6 +136,8 @@ function buildEngineConfig(c) {
     capital: c.capital, globalRiskPct: c.globalRiskPct, basketStopLossPct: c.basketStopLossPct,
     enableSafetyNet: c.enableSafetyNet, initialLot: c.lotStart, distancePoints: c.distancePoints,
     pointSize: c.pointSize, maxBuy: c.maxBuy, maxSell: c.maxSell, basketTargetPct: c.basketTargetPct,
+    enableProfitLock: c.enableProfitLock, profitLockActivateUsd: c.profitLockActivateUsd,
+    profitLockValueUsd: c.profitLockValueUsd,
     tqiWeights: c.tqiWeights,
   };
 }
@@ -227,6 +232,7 @@ function handleTick(price) {
   engine.updateFloating(price, config.pipValue, swapTotal, costsAccum);
 
   if (config.enableSafetyNet) engine.checkGlobalRisk();
+  engine.checkProfitLock();
   engine.checkBasketTarget();
 
   pullEventsToLog();

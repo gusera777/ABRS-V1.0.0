@@ -104,6 +104,16 @@ class ABRSEngine {
       basketTargetPct: config.basketTargetPct ?? 0.01, // 1% Equity
       basketTargetUsd: config.basketTargetUsd ?? null,
 
+      // --- Kunci Profit / Breakeven+ (proteksi profit, opsional) ---
+      // Begitu basketProfit berjalan (running) mencapai `profitLockActivateUsd`,
+      // kunci di-ARM. Selama ter-ARM, jika basketProfit turun kembali sampai
+      // <= `profitLockValueUsd`, basket langsung Close All ("BE+ terkunci")
+      // walau belum menyentuh basketTarget biasa. Cycle lalu reset ke awal
+      // (tidak ada posisi) dan siap mulai lagi dari Level 1.
+      enableProfitLock: config.enableProfitLock ?? true,
+      profitLockActivateUsd: config.profitLockActivateUsd ?? 50, // profit berjalan yang meng-ARM kunci
+      profitLockValueUsd: config.profitLockValueUsd ?? 30,       // level profit yang dikunci/diamankan (BE+)
+
       // --- Deteksi arah entry pertama (SMA cepat vs SMA lambat) ---
       trendFastPeriod: config.trendFastPeriod ?? 10,
       trendSlowPeriod: config.trendSlowPeriod ?? 30,
@@ -154,8 +164,9 @@ class ABRSEngine {
       globalLevel: 0,        // step ke berapa dalam urutan alternating BUY/SELL (dipakai untuk indeks Tabel Lot)
       buyLevel: 0,           // jumlah posisi BUY yang sudah terbuka (0-10, dipakai untuk cek batas Max BUY)
       sellLevel: 0,          // jumlah posisi SELL yang sudah terbuka (0-10, dipakai untuk cek batas Max SELL)
-      result: null,          // 'WIN' | 'LOSS' | 'EMERGENCY'
-      status: 'IDLE'         // IDLE, BUY_ACTIVE, SELL_ACTIVE, CLOSED
+      result: null,          // 'WIN' | 'LOSS' | 'EMERGENCY' | 'LOCKED_PROFIT' | 'MANUAL'
+      status: 'IDLE',        // IDLE, BUY_ACTIVE, SELL_ACTIVE, CLOSED
+      profitLockArmed: false // true begitu basketProfit pernah menyentuh profitLockActivateUsd
     };
 
     this.positions = [];      // { id, side, lot, level, entryPrice, status, openTime, floatingPnl }
@@ -336,6 +347,7 @@ class ABRSEngine {
     this.checkPendingOrders(price);
     this.updateFloating(price);
     if (this.config.enableSafetyNet) this.checkGlobalRisk();
+    this.checkProfitLock();
     this.checkBasketTarget();
   }
 
@@ -368,6 +380,61 @@ class ABRSEngine {
     if (this.cycle.basketProfit >= this.cycle.basketTarget) {
       this.closeBasket('WIN');
     }
+  }
+
+  // ------------------------------------------------------------
+  // KUNCI PROFIT / BREAKEVEN+ (proteksi profit, opsional)
+  // ------------------------------------------------------------
+  // 1) Selama basket BELUM ter-ARM: begitu basketProfit (running) >=
+  //    profitLockActivateUsd (default $50), kunci di-ARM.
+  // 2) Selama SUDAH ter-ARM: jika basketProfit turun kembali sampai
+  //    <= profitLockValueUsd (default $30, "BE+"), Close All langsung
+  //    dieksekusi ('LOCKED_PROFIT') - profit yang sudah terkunci
+  //    diamankan, cycle berakhir dan siap mulai lagi dari Level 1.
+  // ------------------------------------------------------------
+  checkProfitLock() {
+    if (!this.config.enableProfitLock) return;
+    if (this.cycle.status === 'CLOSED') return;
+
+    if (!this.cycle.profitLockArmed && this.cycle.basketProfit >= this.config.profitLockActivateUsd) {
+      this.cycle.profitLockArmed = true;
+      this.logEvent({
+        event: 'PROFIT_LOCK_ARMED',
+        reason: `BASKET_PROFIT_REACHED_${this.config.profitLockActivateUsd}`,
+        price: this.cycle.basketProfit
+      });
+      return;
+    }
+
+    if (this.cycle.profitLockArmed && this.cycle.basketProfit <= this.config.profitLockValueUsd) {
+      this.logEvent({
+        event: 'PROFIT_LOCK_TRIGGERED',
+        reason: `BASKET_PROFIT_DROPPED_TO_${this.config.profitLockValueUsd}`,
+        price: this.cycle.basketProfit
+      });
+      this.closeBasket('LOCKED_PROFIT');
+    }
+  }
+
+  // ------------------------------------------------------------
+  // CLOSE ALL MANUAL - dipicu tombol user, kapan saja, terlepas dari
+  // basket target / kunci profit. Menutup seluruh posisi & pending
+  // order yang ada saat ini, lalu cycle berakhir ('MANUAL'). Setelah
+  // ini tidak ada posisi tersisa; cycle berikutnya mulai dari Level 1.
+  // ------------------------------------------------------------
+  closeBasketManual() {
+    if (this.cycle.status === 'IDLE') {
+      return { closed: false, reason: 'NO_ACTIVE_CYCLE' };
+    }
+    if (this.cycle.status === 'CLOSED') {
+      return { closed: false, reason: 'CYCLE_ALREADY_CLOSED' };
+    }
+    if (!this.positions.some(p => p.status !== 'CLOSED') && !this.pendingOrders.length) {
+      return { closed: false, reason: 'NO_OPEN_POSITIONS' };
+    }
+    this.logEvent({ event: 'MANUAL_CLOSE_ALL_REQUESTED', reason: 'USER_BUTTON' });
+    this.closeBasket('MANUAL');
+    return { closed: true };
   }
 
   closeBasket(result) {

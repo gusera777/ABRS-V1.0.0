@@ -176,6 +176,8 @@ select:focus, input:focus { border-color: var(--accent-sats-dim); }
 }
 .btn:hover { border-color: var(--border-strong); }
 .btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.btn:disabled:hover { border-color: var(--border-subtle); }
 .btn-primary {
   background: var(--accent-sats);
   color: #17120a;

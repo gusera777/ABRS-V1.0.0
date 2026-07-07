@@ -81,6 +81,11 @@
         <span class="badge badge-info" id="recoveryBadge">Recovery: 0x</span>
         <span class="badge badge-gold" id="maxLotBadge">Max Lot: 0.00</span>
         <span class="badge" id="ddBadge">Max DD: $0.00</span>
+        <span class="badge badge-info" id="profitLockBadge">Kunci Profit: —</span>
+      </div>
+
+      <div class="flex gap-8 mt-8" style="flex-wrap:wrap">
+        <button type="button" class="btn btn-danger" id="btnCloseAllManual" title="Tutup semua posisi &amp; pending order sekarang juga">✕ Close All Manual</button>
       </div>
 
       <div class="eyebrow mt-8" style="margin-top:16px">RANTAI CYCLE TERAKHIR</div>
@@ -305,6 +310,30 @@
             <label>Target Profit Basket (% Equity)</label>
             <input type="number" id="cfgTargetProfit" step="0.001" min="0.001">
             <span class="field-hint">Semua posisi ditutup (Close All) begitu total floating profit basket mencapai persentase ini dari equity awal cycle. Contoh: 0.01 = 1%.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>Kunci Profit / Breakeven+ (Opsional)</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>Aktifkan Kunci Profit</label>
+            <select id="cfgEnableProfitLock">
+              <option value="true">Aktif</option>
+              <option value="false">Nonaktif</option>
+            </select>
+            <span class="field-hint">Begitu profit berjalan basket mencapai nilai ARM di bawah, kunci diaktifkan. Jika profit lalu turun kembali sampai ke level BE+, seluruh posisi otomatis ditutup (Close All) untuk mengamankan profit yang sudah didapat, lalu cycle mulai lagi dari Level 1.</span>
+          </div>
+          <div class="field">
+            <label>ARM saat Profit Berjalan ($)</label>
+            <input type="number" id="cfgProfitLockActivate" step="1" min="0">
+            <span class="field-hint">Contoh: 50 → kunci diaktifkan begitu profit basket berjalan mencapai $50.</span>
+          </div>
+          <div class="field">
+            <label>Level Kunci / BE+ ($)</label>
+            <input type="number" id="cfgProfitLockValue" step="1" min="0">
+            <span class="field-hint">Contoh: 30 → setelah ARM, jika profit turun kembali ke $30, Close All otomatis dieksekusi mengamankan profit $30 tsb.</span>
           </div>
         </div>
       </div>

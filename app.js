@@ -30,6 +30,9 @@ const DEFAULT_SETTINGS = {
   maxBuy: 10,
   maxSell: 10,
   basketTargetPct: 0.01,     // 1% Equity
+  enableProfitLock: true,     // Kunci Profit / BE+
+  profitLockActivateUsd: 50,  // ARM begitu profit berjalan capai $ ini
+  profitLockValueUsd: 30,     // Level profit yang dikunci (BE+) saat ter-ARM
   spreadPips: 2,
   commissionPerLot: 3.5,
   swapPerTick: 0,
@@ -111,6 +114,9 @@ function buildEngineConfig(s) {
     maxBuy: s.maxBuy,
     maxSell: s.maxSell,
     basketTargetPct: s.basketTargetPct,
+    enableProfitLock: s.enableProfitLock,
+    profitLockActivateUsd: s.profitLockActivateUsd,
+    profitLockValueUsd: s.profitLockValueUsd,
     tqiWeights: s.tqiWeights
   };
 }
@@ -123,6 +129,21 @@ const fmtPct = n => (n ?? 0).toFixed(2) + '%';
 const shortId = id => (id || '—').toString().slice(-8);
 const fmtTime = ts => new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const fmtDate = ts => new Date(ts).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+// Klasifikasi WIN/LOSS untuk statistik & badge. WIN biasa dan LOCKED_PROFIT
+// (kunci profit/BE+ tersentuh) selalu dihitung WIN (basketProfit-nya pasti >= 0
+// saat ditutup). MANUAL (tombol Close All Manual) diklasifikasikan berdasarkan
+// tanda basketProfit saat itu, karena bisa ditutup dalam kondisi profit atau rugi.
+function isWinCycle(h) {
+  if (h.result === 'WIN' || h.result === 'LOCKED_PROFIT') return true;
+  if (h.result === 'MANUAL') return (h.basketProfit || 0) >= 0;
+  return false;
+}
+function isLossCycle(h) {
+  if (h.result === 'LOSS' || h.result === 'EMERGENCY') return true;
+  if (h.result === 'MANUAL') return (h.basketProfit || 0) < 0;
+  return false;
+}
 
 // ---------------------------------------------------------------
 // DOM REFERENCES
@@ -137,6 +158,7 @@ const el = {
   basketTargetFill: $('basketTargetFill'), basketTargetLabel: $('basketTargetLabel'),
   riskFill: $('riskFill'), riskLabel: $('riskLabel'),
   recoveryBadge: $('recoveryBadge'), maxLotBadge: $('maxLotBadge'), ddBadge: $('ddBadge'),
+  profitLockBadge: $('profitLockBadge'), btnCloseAllManual: $('btnCloseAllManual'),
   chainRow: $('chainRow'),
   tqiArc: $('tqiArc'), tqiValue: $('tqiValue'), tqiClass: $('tqiClass'), tqiModeBadge: $('tqiModeBadge'),
   tqiComponents: $('tqiComponents'),
@@ -272,12 +294,41 @@ function handleTick(price) {
   engine.updateFloating(price, settings.pipValue, swapTotal, costsAccum);
 
   if (settings.enableSafetyNet) engine.checkGlobalRisk();
+  engine.checkProfitLock();
   engine.checkBasketTarget();
 
   pullEventsToLog();
 
   if (engine.cycle.status === 'CLOSED' && engine.cycle.cycleId !== lastFlushedCycleId) {
     flushClosedCycle();
+  }
+}
+
+/**
+ * Tombol "Close All Manual" - user menutup basket kapan saja, terlepas
+ * dari basket target / kunci profit. Setelah ditutup: flush ke riwayat,
+ * cycle direset (tidak ada posisi), dan jika feed sedang berjalan,
+ * langsung coba mulai cycle baru dari Level 1 memakai candle terakhir.
+ */
+async function handleManualCloseAll() {
+  const result = engine.closeBasketManual();
+  if (!result.closed) {
+    if (result.reason === 'NO_OPEN_POSITIONS') alert('Tidak ada posisi/pending order yang sedang berjalan untuk ditutup.');
+    else if (result.reason === 'NO_ACTIVE_CYCLE') alert('Belum ada cycle yang berjalan.');
+    return;
+  }
+
+  pullEventsToLog();
+  if (engine.cycle.cycleId !== lastFlushedCycleId) flushClosedCycle();
+
+  engine.startNewCycleAfterClose();
+  costsAccum = 0;
+  lastRange = null;
+
+  renderAll();
+
+  if (feedRunning && lastCandles.length) {
+    await refreshCandlesAndMaybeStartCycle();
   }
 }
 
@@ -327,7 +378,7 @@ function renderAll() {
 function renderBasket() {
   const c = engine.cycle;
   el.cycleStatusBadge.textContent = c.status;
-  el.cycleStatusBadge.className = 'badge ' + (c.status === 'CLOSED' ? (c.result === 'WIN' ? 'badge-pos' : (c.result === 'EMERGENCY' ? 'badge-gold' : 'badge-neg')) : 'badge-gold');
+  el.cycleStatusBadge.className = 'badge ' + (c.status === 'CLOSED' ? (isWinCycle(c) ? 'badge-pos' : (c.result === 'EMERGENCY' ? 'badge-gold' : 'badge-neg')) : 'badge-gold');
   el.cycleIdShort.textContent = shortId(c.cycleId);
 
   const pnl = c.basketProfit || 0;
@@ -349,6 +400,24 @@ function renderBasket() {
   el.recoveryBadge.textContent = `Level: ${c.recoveryCount + 1}x`;
   el.maxLotBadge.textContent = `Max Lot: ${c.maxLotUsed.toFixed(2)}`;
   el.ddBadge.textContent = `Max DD: ${fmtMoney(c.maxDrawdown)}`;
+
+  if (el.profitLockBadge) {
+    if (!settings.enableProfitLock) {
+      el.profitLockBadge.textContent = 'Kunci Profit: Nonaktif';
+      el.profitLockBadge.className = 'badge';
+    } else if (c.profitLockArmed && c.status !== 'CLOSED') {
+      el.profitLockBadge.textContent = `Kunci Profit: ARMED @ ${fmtMoney(settings.profitLockValueUsd)}`;
+      el.profitLockBadge.className = 'badge badge-pos';
+    } else {
+      el.profitLockBadge.textContent = `Kunci Profit: menunggu ${fmtMoney(settings.profitLockActivateUsd)}`;
+      el.profitLockBadge.className = 'badge badge-info';
+    }
+  }
+
+  if (el.btnCloseAllManual) {
+    const hasSomethingToClose = engine.positions.some(p => p.status !== 'CLOSED') || engine.pendingOrders.length > 0;
+    el.btnCloseAllManual.disabled = !hasSomethingToClose;
+  }
 }
 
 function renderTQIOnly() {
@@ -516,8 +585,8 @@ window.addEventListener('resize', () => { if (lastCandles.length) renderPriceCha
 
 function renderStats() {
   const closed = history.filter(h => h.result);
-  const wins = closed.filter(h => h.result === 'WIN');
-  const losses = closed.filter(h => h.result === 'LOSS' || h.result === 'EMERGENCY');
+  const wins = closed.filter(isWinCycle);
+  const losses = closed.filter(isLossCycle);
   const winRate = closed.length ? (wins.length / closed.length) * 100 : 0;
   const totalPnl = closed.reduce((s, h) => s + (h.basketProfit || 0), 0);
   const grossWin = wins.reduce((s, h) => s + Math.max(0, h.basketProfit || 0), 0);
@@ -602,8 +671,8 @@ function renderRiskSummary() {
 function renderChain() {
   const recent = history.slice(-11);
   const blocks = recent.map(h => {
-    const cls = h.result === 'WIN' ? 'win' : (h.result === 'EMERGENCY' ? 'emergency' : 'loss');
-    const label = h.result === 'WIN' ? 'W' : (h.result === 'EMERGENCY' ? '!' : 'L');
+    const cls = isWinCycle(h) ? 'win' : (h.result === 'EMERGENCY' ? 'emergency' : 'loss');
+    const label = isWinCycle(h) ? 'W' : (h.result === 'EMERGENCY' ? '!' : 'L');
     return `<div class="chain-block ${cls}" title="${shortId(h.cycleId)} · ${fmtMoney(h.basketProfit)}">${label}</div>`;
   });
   const activeLabel = engine.cycle.status === 'CLOSED' ? '·' : '●';
@@ -628,7 +697,7 @@ function renderCycleHistoryTable() {
       <td style="color:${(h.basketProfit || 0) >= 0 ? 'var(--positive)' : 'var(--negative)'}">${fmtMoney(h.basketProfit || 0)}</td>
       <td class="mono-dim">${fmtMoney(h.maxDrawdown || 0)}</td>
       <td>${h.recoveryCount}x</td>
-      <td><span class="badge ${h.result === 'WIN' ? 'badge-pos' : (h.result === 'EMERGENCY' ? 'badge-gold' : 'badge-neg')}">${h.result}</span></td>
+      <td><span class="badge ${isWinCycle(h) ? 'badge-pos' : (h.result === 'EMERGENCY' ? 'badge-gold' : 'badge-neg')}">${h.result}</span></td>
     </tr>
   `).join('');
 }
@@ -668,7 +737,7 @@ function renderTQIBandStats() {
   const bands = ['SIDEWAYS', 'WEAK_TREND', 'TRENDING', 'STRONG_TREND'];
   const rows = bands.map(band => {
     const inBand = history.filter(h => h.result && classifyFromStart(h.tqiStart) === band);
-    const wins = inBand.filter(h => h.result === 'WIN').length;
+    const wins = inBand.filter(isWinCycle).length;
     const rate = inBand.length ? (wins / inBand.length) * 100 : 0;
     return `<div class="learning-band-row">
       <span>${band}</span>
@@ -705,8 +774,8 @@ function renderAIInsights() {
   // 1. Recovery efficacy
   const withRecovery = closed.filter(h => h.recoveryCount > 0);
   const withoutRecovery = closed.filter(h => h.recoveryCount === 0);
-  const wrWith = withRecovery.length ? withRecovery.filter(h => h.result === 'WIN').length / withRecovery.length * 100 : null;
-  const wrWithout = withoutRecovery.length ? withoutRecovery.filter(h => h.result === 'WIN').length / withoutRecovery.length * 100 : null;
+  const wrWith = withRecovery.length ? withRecovery.filter(isWinCycle).length / withRecovery.length * 100 : null;
+  const wrWithout = withoutRecovery.length ? withoutRecovery.filter(isWinCycle).length / withoutRecovery.length * 100 : null;
   if (wrWith != null && wrWithout != null) {
     if (wrWith < wrWithout - 15) {
       insights.push({
@@ -724,7 +793,7 @@ function renderAIInsights() {
   // 2. TQI band performance
   const bandPerf = ['SIDEWAYS', 'WEAK_TREND', 'TRENDING', 'STRONG_TREND'].map(band => {
     const inBand = closed.filter(h => classifyFromStart(h.tqiStart) === band);
-    const rate = inBand.length ? inBand.filter(h => h.result === 'WIN').length / inBand.length * 100 : null;
+    const rate = inBand.length ? inBand.filter(isWinCycle).length / inBand.length * 100 : null;
     return { band, rate, n: inBand.length };
   }).filter(b => b.n >= 2);
   if (bandPerf.length) {
@@ -785,6 +854,9 @@ function openSettings() {
   $('cfgMaxBuy').value = settings.maxBuy;
   $('cfgMaxSell').value = settings.maxSell;
   $('cfgTargetProfit').value = settings.basketTargetPct;
+  $('cfgEnableProfitLock').value = settings.enableProfitLock ? 'true' : 'false';
+  $('cfgProfitLockActivate').value = settings.profitLockActivateUsd;
+  $('cfgProfitLockValue').value = settings.profitLockValueUsd;
   $('cfgSpread').value = settings.spreadPips;
   $('cfgCommission').value = settings.commissionPerLot;
   $('cfgSwap').value = settings.swapPerTick;
@@ -799,6 +871,16 @@ function openSettings() {
   el.settingsModal.classList.add('open');
 }
 function closeSettings() { el.settingsModal.classList.remove('open'); }
+
+if (el.btnCloseAllManual) {
+  el.btnCloseAllManual.addEventListener('click', () => {
+    const hasSomethingToClose = engine.positions.some(p => p.status !== 'CLOSED') || engine.pendingOrders.length > 0;
+    if (!hasSomethingToClose) { alert('Tidak ada posisi/pending order yang sedang berjalan untuk ditutup.'); return; }
+    const proceed = confirm(`Tutup SEMUA posisi & pending order sekarang (Close All Manual)?\nPnL berjalan saat ini: ${fmtMoney(engine.cycle.basketProfit)}.\nCycle akan direset dan mulai lagi dari awal (Level 1).`);
+    if (!proceed) return;
+    handleManualCloseAll();
+  });
+}
 
 $('btnSettings').addEventListener('click', openSettings);
 $('btnSettings2').addEventListener('click', openSettings);
@@ -824,6 +906,9 @@ el.settingsForm.addEventListener('submit', e => {
     maxBuy: Math.min(10, Math.max(1, parseInt($('cfgMaxBuy').value, 10) || DEFAULT_SETTINGS.maxBuy)),
     maxSell: Math.min(10, Math.max(1, parseInt($('cfgMaxSell').value, 10) || DEFAULT_SETTINGS.maxSell)),
     basketTargetPct: parseFloat($('cfgTargetProfit').value) || DEFAULT_SETTINGS.basketTargetPct,
+    enableProfitLock: $('cfgEnableProfitLock').value === 'true',
+    profitLockActivateUsd: parseFloat($('cfgProfitLockActivate').value) || DEFAULT_SETTINGS.profitLockActivateUsd,
+    profitLockValueUsd: parseFloat($('cfgProfitLockValue').value) || DEFAULT_SETTINGS.profitLockValueUsd,
     spreadPips: parseFloat($('cfgSpread').value) || 0,
     commissionPerLot: parseFloat($('cfgCommission').value) || 0,
     swapPerTick: parseFloat($('cfgSwap').value) || 0,
